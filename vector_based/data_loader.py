@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 
-def load_bus_route_source():
+def load_bus_route_details():
     """Load bus route source data into a DataFrame"""
     try:
         df = pd.read_csv('data/bus_route_source.csv')
@@ -11,7 +11,7 @@ def load_bus_route_source():
         print(f"Error loading bus_route_source.csv: {e}")
         return None
 
-def load_waybill_report():
+def load_waybill():
     """Load waybill report data into a DataFrame"""
     try:
         file_path = 'data/waybill_metabase.csv'
@@ -22,7 +22,7 @@ def load_waybill_report():
         print(f"Error loading waybill report: {e}")
         return None
 
-def load_route_stop_mapping():
+def load_stop_location_data():
     """Load route stop mapping data into a DataFrame"""
     try:
         df = pd.read_csv('data/route_stop_mapping.csv')
@@ -35,9 +35,9 @@ def load_route_stop_mapping():
 def load_all_data():
     """Load all required dataframes"""
     results = {
-        'bus_route_source': load_bus_route_source(),
-        'waybill_report': load_waybill_report(),
-        'route_stop_mapping': load_route_stop_mapping()
+        'bus_route_details': load_bus_route_details(),
+        'waybill': load_waybill(),
+        'stop_location_data': load_stop_location_data()
     }
     
     # Check if any dataframes failed to load
