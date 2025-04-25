@@ -135,7 +135,6 @@ def get_neighboring_stops(stops_df, stop_id):
     
     Args:
         stops_df: DataFrame with stop information
-        route_id: tummoc route ID
         stop_ids: List of stop IDs to find neighbors for
     
     Returns:
@@ -146,26 +145,27 @@ def get_neighboring_stops(stops_df, stop_id):
     
     # Sort by stop sequence to ensure correct ordering
     route_stops = stops_df.copy().sort_values('stop_sequence').reset_index(drop=True)
-    
     neighbors = []
     # for stop_id in stop_ids:
         # Find the stop in the sequence
     # try:
-    idx = int(route_stops[route_stops['stop_id'] == stop_id]['stop_sequence'])
-    print(idx)
-    
+    seq_num = int(route_stops[route_stops['stop_id'] == stop_id]['stop_sequence'].iloc[0])
+    # print('sequence_number:', seq_num)
+
     # Get previous stop (if exists)
-    if idx > 0:
-        neighbors.append(route_stops[route_stops['stop_sequence'] == idx-1])
-            
+    if seq_num > 1:
+        neighbors.append(route_stops[route_stops['stop_sequence'] == seq_num-1].iloc[0])
+    
     # Get next stop (if exists)
-    if idx < len(route_stops) - 1:
-        neighbors.append(route_stops[route_stops['stop_sequence'] == idx+1])
+    if seq_num < len(route_stops):
+        neighbors.append(route_stops[route_stops['stop_sequence'] == seq_num+1].iloc[0])
         # except (IndexError, KeyError):
             # Stop not found in this route, skip
             # continue
     
     # Convert list of Series to DataFrame
+    # print('neighbors: ',neighbors)
+    
     if neighbors:
         return pd.DataFrame(neighbors).drop_duplicates().reset_index(drop=True)
     else:
@@ -283,10 +283,7 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         
         # Filter stop location data for this tummoc route
         route_stops = route_stop_mapping[route_stop_mapping['tummoc_id'] == tummoc_id].copy()
-        
-        # Drop rows with stage_num of 0
-        route_stops = route_stops[route_stops['stage_num'] != 0]
-        
+        # print(route_stops)
         if route_stops.empty:
             continue
         
