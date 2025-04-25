@@ -47,7 +47,6 @@ def load_all_data():
     
     return results
 
-
 if __name__ == "__main__":
     # Test loading all data
     data = load_all_data()

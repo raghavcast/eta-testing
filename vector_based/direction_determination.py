@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 from math import radians, cos, sin, asin, sqrt
-import data_loader
+import utility
+import re
 
 def haversine(lon1, lat1, lon2, lat2):
     """
@@ -57,10 +58,12 @@ def vector_similarity(v1, v2):
     Calculate the similarity between two vectors using dot product
     Returns a value between -1 and 1 (1 means same direction, -1 means opposite)
     """
+    #if it's greater than 0, it's similar direction, if it's less than 0, it's opposite
+
     dot_product = v1[0]*v2[0] + v1[1]*v2[1]
     return dot_product
 
-def filter_clustered_points(points, time_threshold_seconds=60, distance_threshold_km=0.05):
+def filter_clustered_points(points, time_threshold_seconds=300, distance_threshold_km=0.05):
     """
     Filter out points that are clustered by time and distance
     
@@ -99,7 +102,7 @@ def filter_clustered_points(points, time_threshold_seconds=60, distance_threshol
     
     return points.iloc[filtered_indices].reset_index(drop=True)
 
-def find_nearest_stops(bus_point, stops_df, max_distance_km=1.0):
+def find_stops_within_distance(bus_point, stops_df, max_distance_km=1.0):
     """
     Find stops that are within a certain distance of the bus point
     
@@ -126,40 +129,41 @@ def find_nearest_stops(bus_point, stops_df, max_distance_km=1.0):
     # Sort by distance
     return nearby_stops.sort_values('distance').reset_index(drop=True)
 
-def get_neighboring_stops(stops_df, route_id, stop_ids):
+def get_neighboring_stops(stops_df, stop_id):
     """
     Get stops that are adjacent to the given stops in the route
     
     Args:
         stops_df: DataFrame with stop information
-        route_id: TUNMOC route ID
+        route_id: tummoc route ID
         stop_ids: List of stop IDs to find neighbors for
     
     Returns:
         DataFrame with neighboring stops
     """
     # Filter for the specific route
-    route_stops = stops_df[stops_df['route_id'] == route_id].copy()
+    # route_stops = stops_df[stops_df['tummoc_id'] == route_id].copy()
     
     # Sort by stop sequence to ensure correct ordering
-    route_stops = route_stops.sort_values('stop_sequence').reset_index(drop=True)
+    route_stops = stops_df.copy().sort_values('stop_sequence').reset_index(drop=True)
     
     neighbors = []
-    for stop_id in stop_ids:
+    # for stop_id in stop_ids:
         # Find the stop in the sequence
-        try:
-            idx = route_stops[route_stops['stop_id'] == stop_id].index[0]
+    # try:
+    idx = int(route_stops[route_stops['stop_id'] == stop_id]['stop_sequence'])
+    print(idx)
+    
+    # Get previous stop (if exists)
+    if idx > 0:
+        neighbors.append(route_stops[route_stops['stop_sequence'] == idx-1])
             
-            # Get previous stop (if exists)
-            if idx > 0:
-                neighbors.append(route_stops.iloc[idx-1])
-            
-            # Get next stop (if exists)
-            if idx < len(route_stops) - 1:
-                neighbors.append(route_stops.iloc[idx+1])
-        except (IndexError, KeyError):
+    # Get next stop (if exists)
+    if idx < len(route_stops) - 1:
+        neighbors.append(route_stops[route_stops['stop_sequence'] == idx+1])
+        # except (IndexError, KeyError):
             # Stop not found in this route, skip
-            continue
+            # continue
     
     # Convert list of Series to DataFrame
     if neighbors:
@@ -194,7 +198,7 @@ def calculate_stop_vectors(stops_df):
     else:
         return [0, 0]  # No direction
 
-def determine_bus_direction(device_id, location_data, min_points=2, angle_threshold=0.0):
+def determine_direction_for_device(device_id, location_data, min_points=2, angle_threshold=0.0):
     """
     Determine the direction of a bus on its route
     
@@ -205,21 +209,46 @@ def determine_bus_direction(device_id, location_data, min_points=2, angle_thresh
         angle_threshold: Minimum dot product value to consider a match (cos of max angle)
     
     Returns:
-        Dictionary with determined direction and TUNMOC route IDs
+        Dictionary with determined direction and tummoc route IDs
     """
     # Load all required data
-    data = data_loader.load_all_data()
+    data = utility.load_all_data()
+    
     waybill_df = data['waybill']
-    bus_route_df = data['bus_route_details']
-    stop_location_df = data['stop_location_data']
+    waybill_df.rename(columns={'Device Serial Number': 'deviceId'}, inplace=True)
+    waybill_df['route_num'] = waybill_df['Schedule No'].str.extract(r'^.*?-(.+?)-')
+
+    route_stop_df = data['stop_location_data']
+    # Rename columns to match the previous logic
+    route_stop_mapping = route_stop_df.copy()
+    route_stop_mapping.rename(columns={
+        'TUMMOC Route ID': 'tummoc_id',
+        'MTC ROUTE NO': 'route_num',
+        'Stop ID': 'stop_id',
+        'Sequence': 'stop_sequence',
+        'Name': 'stop_name',
+        'LAT': 'stop_latitude',
+        'LON': 'stop_longitude',
+        'SOURCE': 'source',
+        'DESTIN': 'destination',
+        'DIRECTION': 'direction',
+        'STAGEID': 'stage_id',
+        'STAGENO': 'stage_num',
+        'STAGE_NAME': 'stage_name',
+        'STAGENO CLEAN': 'stage_num_clean',
+        'STAGE_NAME CLEAN': 'stage_name_clean'
+    }, inplace=True)
     
     # Get route number from waybill
-    waybill_match = waybill_df[waybill_df['Device Number'] == device_id]
+    waybill_match = waybill_df[waybill_df['deviceId'] == device_id]
     if waybill_match.empty:
         return {"error": f"Device ID {device_id} not found in waybill"}
     
-    route_number = waybill_match['Route'].iloc[0]
-    
+    # Extracting route number from
+    # waybill_match['route_num'] = waybill_match['Schedule No'].str.extract(r'^.*?-(.+?)-')
+
+    route_no = waybill_match.iloc[0]
+    route_number = route_no['route_num']
     # Filter location data for this device
     bus_locations = location_data[location_data['deviceId'] == device_id].copy()
     
@@ -233,24 +262,30 @@ def determine_bus_direction(device_id, location_data, min_points=2, angle_thresh
     # Calculate bus vector
     bus_vector = calculate_vector(filtered_locations)
     
-    # Get all possible TUNMOC route IDs for this MTC route number
-    possible_routes = bus_route_df[bus_route_df['route_number'] == route_number]
+    # Get all possible tummoc route IDs for this MTC route number
+    possible_routes = route_stop_mapping[route_stop_mapping['route_num'] == route_number]
     
     if possible_routes.empty:
-        return {"error": f"Route number {route_number} not found in bus route data"}
+        return {"error": f"Route number {route_number} not found in route stop mapping data"}
+    print(possible_routes['tummoc_id'].unique())
+    # Group by tummoc_id to ensure we handle each tummoc ID only once
+    grouped_routes = possible_routes.groupby('tummoc_id')
     
     # Get the last observed bus location
     last_bus_point = filtered_locations.iloc[-1]
     
     results = []
     
-    # For each possible route (UP, DOWN, branch)
-    for _, route in possible_routes.iterrows():
-        tunmoc_id = route['tunmoc_id']
-        direction = route['direction']
+    # For each unique tummoc_id
+    for tummoc_id, group in grouped_routes:
+        # Get the direction from the first row of the group, since they all have the same direction
+        direction = group['direction'].iloc[0]
         
-        # Filter stop location data for this TUNMOC route
-        route_stops = stop_location_df[stop_location_df['route_id'] == tunmoc_id].copy()
+        # Filter stop location data for this tummoc route
+        route_stops = route_stop_mapping[route_stop_mapping['tummoc_id'] == tummoc_id].copy()
+        
+        # Drop rows with stage_num of 0
+        route_stops = route_stops[route_stops['stage_num'] != 0]
         
         if route_stops.empty:
             continue
@@ -259,7 +294,7 @@ def determine_bus_direction(device_id, location_data, min_points=2, angle_thresh
         route_stops = route_stops.sort_values('stop_sequence').reset_index(drop=True)
         
         # Find nearest stops to the bus
-        nearest_stops = find_nearest_stops(last_bus_point, route_stops)
+        nearest_stops = find_stops_within_distance(last_bus_point, route_stops)
         
         if nearest_stops.empty:
             continue
@@ -268,8 +303,14 @@ def determine_bus_direction(device_id, location_data, min_points=2, angle_thresh
         nearest_stop = nearest_stops.iloc[0]
         
         # Get neighboring stops
-        neighbors = get_neighboring_stops(route_stops, tunmoc_id, [nearest_stop['stop_id']])
+        neighbors = get_neighboring_stops(route_stops, nearest_stop['stop_id'])
+        print(len(nearest_stops), len(neighbors))
+        # for _,stop in nearest_stops.iterrows():
+        #     if stop['stop_id'] in neighbors.stop_id.values:
+        #         closest_neighbor = stop
+        #         break
         
+
         # If we have the nearest stop and its neighbors
         if not neighbors.empty:
             # Create a small DataFrame with the nearest stop and its neighbors
@@ -280,11 +321,11 @@ def determine_bus_direction(device_id, location_data, min_points=2, angle_thresh
             
             # Calculate similarity
             similarity = vector_similarity(bus_vector, stop_vector)
-            
+            print(tummoc_id, stop_vector, direction, similarity, '\n')
             # If similarity is above threshold
             if similarity > angle_threshold:  # Allowing 90° on either side (cos(90°) = 0)
                 results.append({
-                    "tunmoc_id": tunmoc_id,
+                    "tummoc_id": tummoc_id,
                     "direction": direction,
                     "similarity": similarity,
                     "nearest_stop_id": nearest_stop['stop_id'],
@@ -302,32 +343,18 @@ def determine_bus_direction(device_id, location_data, min_points=2, angle_thresh
         "matches": results
     }
 
-def determine_direction_for_device(device_id, synthetic_data_df, min_points=2):
-    """
-    Wrapper function to determine direction for a specific device
-    
-    Args:
-        device_id: ID of the bus device
-        synthetic_data_df: DataFrame with synthetic location data
-        min_points: Minimum number of points needed
-    
-    Returns:
-        Direction determination results
-    """
-    return determine_bus_direction(device_id, synthetic_data_df, min_points)
-
 if __name__ == "__main__":
     # Load synthetic data for testing
-    try:
-        synthetic_data = pd.read_csv('synthetic_amnex_data.csv')
+    # try:
+        synthetic_data = pd.read_csv('data/generated_bus_route_data.csv')
         if not pd.api.types.is_datetime64_dtype(synthetic_data['date']):
             synthetic_data['date'] = pd.to_datetime(synthetic_data['date'])
         
         # Test with a sample device ID
         if not synthetic_data.empty:
-            sample_device_id = synthetic_data['deviceId'].iloc[0]
+            sample_device_id = 1493446044
             result = determine_direction_for_device(sample_device_id, synthetic_data)
             print(f"Direction determination for device {sample_device_id}:")
             print(result)
-    except Exception as e:
-        print(f"Error testing direction determination: {e}") 
+    # except Exception as e:
+        # print(f"Error testing direction determination: {e}") 
