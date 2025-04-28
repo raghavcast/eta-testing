@@ -165,7 +165,6 @@ def get_neighboring_stops(stops_df, stop_id):
     
     # Convert list of Series to DataFrame
     # print('neighbors: ',neighbors)
-    
     if neighbors:
         return pd.DataFrame(neighbors).drop_duplicates().reset_index(drop=True)
     else:
@@ -349,7 +348,7 @@ if __name__ == "__main__":
         
         # Test with a sample device ID
         if not synthetic_data.empty:
-            sample_device_id = 1493446044
+            sample_device_id = 1493461021
             result = determine_direction_for_device(sample_device_id, synthetic_data)
             print(f"Direction determination for device {sample_device_id}:")
             print(result)
