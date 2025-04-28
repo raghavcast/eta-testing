@@ -1,3 +1,3 @@
 # eta-testing
-The streaming_tracker subdirectory holds the working files
+The vector_based subdirectory holds the working files
 
