@@ -33,23 +33,22 @@ def calculate_vector(points):
     # Need at least 2 points to calculate a direction
     if len(points) < 2:
         return None
-    
+    print(points)
     # Convert to numpy arrays for vector operations
     lats = points['lat'].values
     longs = points['long'].values
     
     # Calculate average changes in lat/long (simple vectors)
-    dx = 0
-    dy = 0
+    # dx = 0
+    # dy = 0
     
-    for i in range(1, len(points)):
-        dy += lats[i] - lats[i-1]
-        dx += longs[i] - longs[i-1]
+    y = lats[-1] - lats[0]
+    x = longs[-1] - longs[0]
     
     # Normalize the vector
-    magnitude = np.sqrt(dx**2 + dy**2)
+    magnitude = np.sqrt(x**2 + y**2)
     if magnitude > 0:
-        return [dx/magnitude, dy/magnitude]
+        return [x/magnitude, y/magnitude]
     else:
         return [0, 0]  # No movement detected
 
@@ -63,13 +62,12 @@ def vector_similarity(v1, v2):
     dot_product = v1[0]*v2[0] + v1[1]*v2[1]
     return dot_product
 
-def filter_clustered_points(points, time_threshold_seconds=300, distance_threshold_km=0.05):
+def filter_clustered_points(points, distance_threshold_km=0.02):
     """
     Filter out points that are clustered by time and distance
     
     Args:
         points: DataFrame with 'lat', 'long', and 'date' columns
-        time_threshold_seconds: Minimum time difference between consecutive points
         distance_threshold_km: Minimum distance between consecutive points
     
     Returns:
@@ -87,9 +85,6 @@ def filter_clustered_points(points, time_threshold_seconds=300, distance_thresho
     for i in range(1, len(points)):
         prev_idx = filtered_indices[-1]
         
-        # Check time difference
-        time_diff = (points['date'].iloc[i] - points['date'].iloc[prev_idx]).total_seconds()
-        
         # Check distance
         distance = haversine(
             points['long'].iloc[prev_idx], points['lat'].iloc[prev_idx],
@@ -97,7 +92,7 @@ def filter_clustered_points(points, time_threshold_seconds=300, distance_thresho
         )
         
         # If either time or distance is significant, keep the point
-        if time_diff > time_threshold_seconds or distance > distance_threshold_km:
+        if distance > distance_threshold_km:
             filtered_indices.append(i)
     
     return points.iloc[filtered_indices].reset_index(drop=True)
@@ -182,18 +177,17 @@ def calculate_stop_vectors(stops_df):
     """
     if len(stops_df) < 2:
         return [0, 0]
+
+    stops_df.sort_values('stop_sequence', inplace=True)
     
-    dx = 0
-    dy = 0
-    
-    for i in range(1, len(stops_df)):
-        dy += stops_df['stop_latitude'].iloc[i] - stops_df['stop_latitude'].iloc[i-1]
-        dx += stops_df['stop_longitude'].iloc[i] - stops_df['stop_longitude'].iloc[i-1]
+    y = stops_df['stop_latitude'].iloc[-1] - stops_df['stop_latitude'].iloc[0]
+    x = stops_df['stop_longitude'].iloc[-1] - stops_df['stop_longitude'].iloc[0]
     
     # Normalize the vector
-    magnitude = np.sqrt(dx**2 + dy**2)
+    magnitude = np.sqrt(x**2 + y**2)
     if magnitude > 0:
-        return [dx/magnitude, dy/magnitude]
+        # print([x/magnitude, y/magnitude])
+        return [x/magnitude, y/magnitude]
     else:
         return [0, 0]  # No direction
 
@@ -259,7 +253,7 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         return {"error": f"Not enough filtered points for device {device_id}. Got {len(filtered_locations)}, need {min_points}"}
     
     # Calculate bus vector
-    bus_vector = calculate_vector(filtered_locations)
+    bus_vector = calculate_vector(filtered_locations[:5])
     
     # Get all possible tummoc route IDs for this MTC route number
     possible_routes = route_stop_mapping[route_stop_mapping['route_num'] == route_number]
@@ -295,6 +289,8 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         if nearest_stops.empty:
             continue
         
+        print(route_stops[['tummoc_id','stop_sequence','stop_name']])
+
         # Get the nearest stop
         nearest_stop = nearest_stops.iloc[0]
         
