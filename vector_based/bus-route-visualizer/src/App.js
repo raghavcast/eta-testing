@@ -128,15 +128,9 @@ const SimilarityIndicator = ({ similarity }) => {
   let color = "gray.500";
   let status = "Neutral";
   
-  if (similarity > 0.7) {
+  if (similarity > 0) {
     color = "green.500";
     status = "Same Direction";
-  } else if (similarity > 0) {
-    color = "yellow.500";
-    status = "Similar Direction";
-  } else if (similarity > -0.7) {
-    color = "orange.500";
-    status = "Different Direction";
   } else {
     color = "red.500";
     status = "Opposite Direction";
@@ -156,6 +150,8 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [visibleTummocIds, setVisibleTummocIds] = useState({});
+  // Define similarity threshold for high matches
+  const SIMILARITY_THRESHOLD = 0;
 
   // Fetch all available device IDs when the component mounts
   useEffect(() => {
@@ -164,7 +160,7 @@ const App = () => {
         const ids = await fetchDeviceIds();
         setDeviceIds(ids);
         if (ids.length > 0) {
-          setSelectedDeviceId(ids[0]);
+          setSelectedDeviceId(ids[0].id);
         }
       } catch (err) {
         setError('Failed to load device IDs: ' + err.message);
@@ -195,7 +191,8 @@ const App = () => {
       if (data.matches && data.matches.length > 0) {
         const initialVisibility = {};
         data.matches.forEach(match => {
-          initialVisibility[match.tummoc_id] = true;
+          // Default to showing only high similarity matches
+          initialVisibility[match.tummoc_id] = match.similarity >= SIMILARITY_THRESHOLD;
         });
         setVisibleTummocIds(initialVisibility);
       }
@@ -254,6 +251,80 @@ const App = () => {
   };
 
   const colorMap = getColorMap();
+  
+  // Group matches by similarity
+  const getGroupedMatches = () => {
+    if (!routeData || !routeData.matches || routeData.matches.length === 0) {
+      return { highSimilarity: [], lowSimilarity: [] };
+    }
+    
+    // Sort matches by similarity (highest first)
+    const sortedMatches = [...routeData.matches].sort((a, b) => b.similarity - a.similarity);
+    
+    return {
+      highSimilarity: sortedMatches.filter(match => match.similarity >= SIMILARITY_THRESHOLD),
+      lowSimilarity: sortedMatches.filter(match => match.similarity < SIMILARITY_THRESHOLD)
+    };
+  };
+  
+  const groupedMatches = getGroupedMatches();
+
+  // Function to create a route card
+  const renderRouteCard = (match, index) => {
+    const color = colorMap[match.tummoc_id] || '#F56565';
+    return (
+      <Box 
+        key={match.tummoc_id} 
+        p={3} 
+        borderWidth={1} 
+        borderRadius="md" 
+        width="full"
+        borderColor={visibleTummocIds[match.tummoc_id] ? color : 'gray.200'}
+        opacity={visibleTummocIds[match.tummoc_id] ? 1 : 0.6}
+      >
+        <HStack justifyContent="space-between" mb={2}>
+          <HStack>
+            <Box 
+              width="12px" 
+              height="12px" 
+              bg={color} 
+              borderRadius="full" 
+            />
+            <Text fontWeight="bold">Tummoc ID: {match.tummoc_id}</Text>
+          </HStack>
+          <Badge colorScheme={match.similarity > 0.7 ? 'green' : match.similarity > 0 ? 'yellow' : 'red'}>
+            {match.similarity.toFixed(2)}
+          </Badge>
+        </HStack>
+        
+        <Text fontSize="sm">Direction: {match.direction}</Text>
+        <Text fontSize="sm">Nearest Stop: {match.nearest_stop_name}</Text>
+        <Text fontSize="sm">Stop Vector: {match.stop_vector ? formatVector(match.stop_vector) : 'N/A'}</Text>
+        
+        <Button 
+          size="sm" 
+          mt={2} 
+          width="full"
+          variant={visibleTummocIds[match.tummoc_id] ? "outline" : "solid"}
+          colorScheme={visibleTummocIds[match.tummoc_id] ? "gray" : "blue"}
+          onClick={() => toggleTummocVisibility(match.tummoc_id)}
+        >
+          {visibleTummocIds[match.tummoc_id] ? "Hide Route" : "Show Route"}
+        </Button>
+      </Box>
+    );
+  };
+
+  // Function to toggle all routes in a group
+  const toggleAllInGroup = (matches, visible) => {
+    setVisibleTummocIds(prev => {
+      const updated = { ...prev };
+      matches.forEach(match => {
+        updated[match.tummoc_id] = visible;
+      });
+      return updated;
+    });
+  };
 
   return (
     <Box p={4}>
@@ -277,8 +348,10 @@ const App = () => {
               width="full"
               mb={3}
             >
-              {deviceIds.map(id => (
-                <option key={id} value={id}>{id}</option>
+              {deviceIds.map(device => (
+                <option key={device.id} value={device.id}>
+                  {device.fleetNumber ? `${device.id}` : device.id}
+                </option>
               ))}
             </Select>
             
@@ -294,54 +367,62 @@ const App = () => {
             </Button>
           </Box>
           
-          {routeData && routeData.matches && routeData.matches.length > 0 && (
+          {/* High Similarity Matches */}
+          {routeData && groupedMatches.highSimilarity.length > 0 && (
+            <Box width="full" p={4} bg="green.50" borderRadius="md" borderWidth={1} borderColor="green.200">
+              <Flex justifyContent="space-between" align="center" mb={3}>
+                <Heading as="h3" size="sm">High Similarity Matches</Heading>
+                <HStack spacing={2}>
+                  <Button 
+                    size="xs" 
+                    colorScheme="green" 
+                    onClick={() => toggleAllInGroup(groupedMatches.highSimilarity, true)}
+                  >
+                    Show All
+                  </Button>
+                  <Button 
+                    size="xs" 
+                    variant="outline" 
+                    colorScheme="green" 
+                    onClick={() => toggleAllInGroup(groupedMatches.highSimilarity, false)}
+                  >
+                    Hide All
+                  </Button>
+                </HStack>
+              </Flex>
+              <Text fontSize="xs" mb={3}>These routes closely match the bus vector with similarity ≥ {SIMILARITY_THRESHOLD.toFixed(1)}</Text>
+              <VStack align="flex-start" spacing={2} maxHeight="300px" overflowY="auto" width="full">
+                {groupedMatches.highSimilarity.map((match, index) => renderRouteCard(match, index))}
+              </VStack>
+            </Box>
+          )}
+          
+          {/* Low Similarity Matches */}
+          {routeData && groupedMatches.lowSimilarity.length > 0 && (
             <Box width="full" p={4} bg="gray.50" borderRadius="md" borderWidth={1}>
-              <Heading as="h3" size="sm" mb={3}>Matched Routes</Heading>
-              <VStack align="flex-start" spacing={2} maxHeight="600px" overflowY="auto" width="full">
-                {routeData.matches.map((match, index) => {
-                  const color = colorMap[match.tummoc_id] || '#F56565';
-                  return (
-                    <Box 
-                      key={match.tummoc_id} 
-                      p={3} 
-                      borderWidth={1} 
-                      borderRadius="md" 
-                      width="full"
-                      borderColor={visibleTummocIds[match.tummoc_id] ? color : 'gray.200'}
-                      opacity={visibleTummocIds[match.tummoc_id] ? 1 : 0.6}
-                    >
-                      <HStack justifyContent="space-between" mb={2}>
-                        <HStack>
-                          <Box 
-                            width="12px" 
-                            height="12px" 
-                            bg={color} 
-                            borderRadius="full" 
-                          />
-                          <Text fontWeight="bold">Tummoc ID: {match.tummoc_id}</Text>
-                        </HStack>
-                        <Badge colorScheme={match.similarity > 0.7 ? 'green' : match.similarity > 0 ? 'yellow' : 'red'}>
-                          {match.similarity.toFixed(2)}
-                        </Badge>
-                      </HStack>
-                      
-                      <Text fontSize="sm">Direction: {match.direction}</Text>
-                      <Text fontSize="sm">Nearest Stop: {match.nearest_stop_name}</Text>
-                      <Text fontSize="sm">Stop Vector: {match.stop_vector ? formatVector(match.stop_vector) : 'N/A'}</Text>
-                      
-                      <Button 
-                        size="sm" 
-                        mt={2} 
-                        width="full"
-                        variant={visibleTummocIds[match.tummoc_id] ? "outline" : "solid"}
-                        colorScheme={visibleTummocIds[match.tummoc_id] ? "gray" : "blue"}
-                        onClick={() => toggleTummocVisibility(match.tummoc_id)}
-                      >
-                        {visibleTummocIds[match.tummoc_id] ? "Hide Route" : "Show Route"}
-                      </Button>
-                    </Box>
-                  );
-                })}
+              <Flex justifyContent="space-between" align="center" mb={3}>
+                <Heading as="h3" size="sm">Low Similarity Matches</Heading>
+                <HStack spacing={2}>
+                  <Button 
+                    size="xs" 
+                    colorScheme="gray" 
+                    onClick={() => toggleAllInGroup(groupedMatches.lowSimilarity, true)}
+                  >
+                    Show All
+                  </Button>
+                  <Button 
+                    size="xs" 
+                    variant="outline" 
+                    colorScheme="gray" 
+                    onClick={() => toggleAllInGroup(groupedMatches.lowSimilarity, false)}
+                  >
+                    Hide All
+                  </Button>
+                </HStack>
+              </Flex>
+              <Text fontSize="xs" mb={3}>These routes have lower similarity to the bus vector (&lt; {SIMILARITY_THRESHOLD.toFixed(1)})</Text>
+              <VStack align="flex-start" spacing={2} maxHeight="300px" overflowY="auto" width="full">
+                {groupedMatches.lowSimilarity.map((match, index) => renderRouteCard(match, index))}
               </VStack>
             </Box>
           )}
@@ -388,6 +469,7 @@ const App = () => {
                 
                 <Box width="full">
                   <Text fontSize="lg" fontWeight="medium">Device: {routeData.device_id}</Text>
+                  <Text>Fleet Number: {routeData.fleet_number}</Text>
                   <Text>Route Number: {routeData.route_number}</Text>
                   <Text>Points Used: {routeData.num_points_used}</Text>
                 </Box>

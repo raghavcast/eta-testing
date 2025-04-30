@@ -21,6 +21,17 @@ def load_waybill():
     except Exception as e:
         print(f"Error loading waybill report: {e}")
         return None
+    
+def load_fleet_device_mapping():
+    """Load fleet device mapping data into a DataFrame"""
+    try:
+        file_path = 'data/fleet_device_mapping.csv'
+        df = pd.read_csv(file_path)
+        print(f"Loaded {file_path} with {len(df)} rows")
+        return df
+    except Exception as e:
+        print(f"Error loading fleet device mapping: {e}")
+        return None
 
 def load_stop_location_data():
     """Load route stop mapping data into a DataFrame"""
@@ -37,7 +48,8 @@ def load_all_data():
     results = {
         'bus_route_details': load_bus_route_details(),
         'waybill': load_waybill(),
-        'stop_location_data': load_stop_location_data()
+        'stop_location_data': load_stop_location_data(),
+        'fleet_device_mapping': load_fleet_device_mapping()
     }
     
     # Check if any dataframes failed to load

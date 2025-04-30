@@ -208,7 +208,24 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
     data = utility.load_all_data()
     
     waybill_df = data['waybill']
-    waybill_df.rename(columns={'Device Serial Number': 'deviceId'}, inplace=True)
+    
+    # Convert device_id to string for consistent handling
+    
+    # Load the fleet-device mapping
+    fleet_df = data['fleet_device_mapping']
+    print(fleet_df)
+    # Get fleet number from mapping
+    fleet_number = None
+    if not fleet_df.empty:
+        # Filter using string comparison
+        device_mapping = fleet_df[fleet_df['Chalo DeviceID'] == device_id]
+        if not device_mapping.empty:
+            fleet_number = device_mapping['Fleet'].iloc[0]
+            print(f"Found fleet number {fleet_number} for device {device_id}")
+
+    waybill_df.rename(columns={'Vehicle No': 'fleetNo'}, inplace=True)
+    
+    # Extract route number from Schedule No
     waybill_df['route_num'] = waybill_df['Schedule No'].str.extract(r'^.*?-(.+?)-')
 
     route_stop_df = data['stop_location_data']
@@ -231,18 +248,17 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         'STAGENO CLEAN': 'stage_num_clean',
         'STAGE_NAME CLEAN': 'stage_name_clean'
     }, inplace=True)
-    
-    # Get route number from waybill
-    waybill_match = waybill_df[waybill_df['deviceId'] == device_id]
-    if waybill_match.empty:
-        return {"error": f"Device ID {device_id} not found in waybill"}
-    
-    # Extracting route number from
-    # waybill_match['route_num'] = waybill_match['Schedule No'].str.extract(r'^.*?-(.+?)-')
 
+    waybill_match = waybill_df[waybill_df['fleetNo'] == fleet_number]    
+    
+    if waybill_match.empty:
+        return {"error": f"Fleet {fleet_number} not found in waybill"}
+    
+    waybill_match['route_num'] = waybill_match['Schedule No'].str.extract(r'^.*?-(.+?)-')
     route_no = waybill_match.iloc[0]
     route_number = route_no['route_num']
-    # Filter location data for this device
+    
+    # Filter location data for this device using string comparison
     bus_locations = location_data[location_data['deviceId'] == device_id].copy()
     
     # Filter out clustered points
@@ -329,6 +345,7 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
     
     return {
         "device_id": device_id,
+        "fleet_number": fleet_number,
         "route_number": route_number,
         "bus_vector": bus_vector,
         "num_points_used": len(filtered_locations),
@@ -344,7 +361,7 @@ if __name__ == "__main__":
         
         # Test with a sample device ID
         if not synthetic_data.empty:
-            sample_device_id = 1493461021
+            sample_device_id = 869244044489346
             result = determine_direction_for_device(sample_device_id, synthetic_data)
             print(f"Direction determination for device {sample_device_id}:")
             print(result)

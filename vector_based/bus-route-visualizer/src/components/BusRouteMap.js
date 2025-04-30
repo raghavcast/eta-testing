@@ -365,7 +365,7 @@ const BusRouteMap = ({ routeData, visibleTummocIds = {}, colorMap = {} }) => {
   // Get the last bus position for vector visualization
   const lastBusPosition = busPositions.length > 0 ? busPositions[busPositions.length - 1] : null;
   
-  // Calculate bus vector correctly using first few points
+  // Get bus vector from routeData
   const busVector = routeData.bus_vector;
   
   // Get stop vector from matches
@@ -428,6 +428,7 @@ const BusRouteMap = ({ routeData, visibleTummocIds = {}, colorMap = {} }) => {
           >
             <Popup>
               Current Position<br />
+              Fleet Number: {routeData.fleet_number}<br />
               {routeData.matches && routeData.matches.length > 0 && (
                 <>
                   Direction: {routeData.matches[0].direction}<br />
