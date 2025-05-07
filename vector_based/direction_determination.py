@@ -191,7 +191,7 @@ def calculate_stop_vectors(stops_df):
     else:
         return [0, 0]  # No direction
 
-def determine_direction_for_device(device_id, location_data, min_points=2, angle_threshold=0.0):
+def determine_direction_for_device(device_id, location_data, min_points=2, max_points=5, angle_threshold=0.0):
     """
     Determine the direction of a bus on its route
     
@@ -199,6 +199,7 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         device_id: ID of the bus device
         location_data: DataFrame with location data for the bus
         min_points: Minimum number of points needed (>= 2)
+        max_points: Maximum number of points to use for direction calculation
         angle_threshold: Minimum dot product value to consider a match (cos of max angle)
     
     Returns:
@@ -261,15 +262,21 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
     # Filter location data for this device using string comparison
     bus_locations = location_data[location_data['deviceId'] == device_id].copy()
     
+    # Sort by date to ensure we get the earliest points
+    bus_locations = bus_locations.sort_values('date').reset_index(drop=True)
+    
+    # Only keep the first N points for direction calculation
+    initial_locations = bus_locations.head(max_points)
+    
     # Filter out clustered points
-    filtered_locations = filter_clustered_points(bus_locations)
+    filtered_locations = filter_clustered_points(initial_locations)
     
     # Check if we have enough points
     if len(filtered_locations) < min_points:
         return {"error": f"Not enough filtered points for device {device_id}. Got {len(filtered_locations)}, need {min_points}"}
     
-    # Calculate bus vector
-    bus_vector = calculate_vector(filtered_locations[:5])
+    # Calculate bus vector using only the first few points
+    bus_vector = calculate_vector(filtered_locations)
     
     # Get all possible tummoc route IDs for this MTC route number
     possible_routes = route_stop_mapping[route_stop_mapping['route_num'] == route_number]
@@ -280,8 +287,9 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
     # Group by tummoc_id to ensure we handle each tummoc ID only once
     grouped_routes = possible_routes.groupby('tummoc_id')
     
-    # Get the last observed bus location
-    last_bus_point = filtered_locations.iloc[-1]
+    # Get the last observed bus location from the full dataset
+    # For finding nearest stop, we use the last known location
+    last_bus_point = bus_locations.iloc[-1]
     
     results = []
     
@@ -313,11 +321,6 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         # Get neighboring stops
         neighbors = get_neighboring_stops(route_stops, nearest_stop['stop_id'])
         print(len(nearest_stops), len(neighbors))
-        # for _,stop in nearest_stops.iterrows():
-        #     if stop['stop_id'] in neighbors.stop_id.values:
-        #         closest_neighbor = stop
-        #         break
-        
 
         # If we have the nearest stop and its neighbors
         if not neighbors.empty:
@@ -348,7 +351,7 @@ def determine_direction_for_device(device_id, location_data, min_points=2, angle
         "fleet_number": fleet_number,
         "route_number": route_number,
         "bus_vector": bus_vector,
-        "num_points_used": len(filtered_locations),
+        "num_initial_points_used": len(filtered_locations),
         "matches": results
     }
 
@@ -362,7 +365,8 @@ if __name__ == "__main__":
         # Test with a sample device ID
         if not synthetic_data.empty:
             sample_device_id = 869244044489346
-            result = determine_direction_for_device(sample_device_id, synthetic_data)
+            # Only use first 5 points for direction determination
+            result = determine_direction_for_device(sample_device_id, synthetic_data, max_points=5)
             print(f"Direction determination for device {sample_device_id}:")
             print(result)
     # except Exception as e:
