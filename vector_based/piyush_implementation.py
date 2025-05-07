@@ -363,6 +363,16 @@ class BusTracker:
         
         # If we have a current segment, check if we've crossed it
         if bus_state.current_segment:
+            # Get start and end stop names for current segment
+            start_stop = bus_state.route_info['route_stops'][
+                bus_state.route_info['route_stops']['stop_id'] == bus_state.current_segment['start_stop']
+            ].iloc[0]
+            end_stop = bus_state.route_info['route_stops'][
+                bus_state.route_info['route_stops']['stop_id'] == bus_state.current_segment['end_stop']
+            ].iloc[0]
+            
+            print(f"Current segment: {start_stop['stop_name']} -> {end_stop['stop_name']}")
+            
             if closest_stop['stop_id'] == bus_state.current_segment['end_stop']:
                 print(f"Found potential segment end: {closest_stop['stop_name']}")
                 
@@ -382,14 +392,14 @@ class BusTracker:
                         travel_time = int((exit_time - entry_time).total_seconds())
                         
                         print(f"\nSegment Time Calculation:")
-                        print(f"Start Stop: {bus_state.current_segment['start_stop']}")
-                        print(f"End Stop: {bus_state.current_segment['end_stop']}")
+                        print(f"Start Stop: {start_stop['stop_name']} (ID: {bus_state.current_segment['start_stop']})")
+                        print(f"End Stop: {end_stop['stop_name']} (ID: {bus_state.current_segment['end_stop']})")
                         print(f"Entry Time: {entry_time}")
                         print(f"Exit Time: {exit_time}")
                         print(f"Time Taken: {travel_time} seconds")
                         
                         if 0 < travel_time < 3600:  # Valid time between 0 and 1 hour
-                            print(f"Updating segment time for {bus_state.current_segment['start_stop']} -> {bus_state.current_segment['end_stop']}")
+                            print(f"Updating segment time for {start_stop['stop_name']} -> {end_stop['stop_name']}")
                             self.travel_time_tracker.update_segment_time(
                                 bus_state.current_segment['start_stop'],
                                 bus_state.current_segment['end_stop'],
