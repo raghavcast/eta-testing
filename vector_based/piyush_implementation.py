@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import math
@@ -8,12 +8,46 @@ from typing import Dict, List, Optional, Tuple
 from geopy.distance import geodesic
 import utility
 import direction_determination
+import redis
+import logging
+
+# Configure logging
+def setup_logging():
+    # Create logs directory if it doesn't exist
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    # Generate log filename with timestamp
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    log_file = f'logs/bus_tracker_{timestamp}.log'
+    
+    # Configure logging with a simpler format that matches the original print statements
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(message)s',  # Only show the message, no timestamp or level
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()  # This will also print to terminal
+        ]
+    )
+    return log_file
+
+# Redis connection setup
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
+REDIS_DB = 1
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
 class TravelTimeTracker:
     def __init__(self):
-        self.segment_times = {}  # Cache for segment travel times
+        self.segment_times = {}  # Cache structure: {startId_endId: {(driverId, exitTimestamp): travelTime}}
         self.historical_averages = self._load_historical_averages()
+        self.last_historical_update_hour = None
+        self.current_hour_travel_times = {}  # Track travel times for current hour
+        self.previous_hour_travel_times = {}  # Store previous hour's travel times
         
+
+    ### These historical averages can also be stored and loaded from redis. It is stored in json file now only for testing    
     def _load_historical_averages(self) -> Dict:
         """Load historical averages from JSON file"""
         try:
@@ -32,49 +66,79 @@ class TravelTimeTracker:
         except Exception as e:
             print(f"Error saving historical averages: {e}")
     
-    def update_segment_time(self, start_stop: str, end_stop: str, travel_time: int):
-        """Update travel time for a segment"""
+    # Update the time taken to travel between the two stops/the segment
+    def update_segment_time(self, start_stop: str, end_stop: str, travel_time: int, timestamp: float, device_id: int):
+        """Update segment time cache with the latest travel time"""
         key = f"{start_stop}_{end_stop}"
-        current_hour = datetime.now().hour
-        current_day = datetime.now().strftime('%A')
         
-        # Update segment time cache
-        self.segment_times[key] = {
-            'time': travel_time,
-            'timestamp': datetime.now().timestamp()
-        }
+        # Initialize the inner dictionary if it doesn't exist
+        if key not in self.segment_times:
+            self.segment_times[key] = {}
         
-        # Update historical averages
-        if key not in self.historical_averages:
-            self.historical_averages[key] = {}
+        # Store travel time with (device_id, timestamp) as the key
+        cache_key = (device_id, timestamp)
+        self.segment_times[key][cache_key] = travel_time
         
-        if current_day not in self.historical_averages[key]:
-            self.historical_averages[key][current_day] = {}
-        
-        if current_hour not in self.historical_averages[key][current_day]:
-            self.historical_averages[key][current_day][current_hour] = []
-        
-        self.historical_averages[key][current_day][current_hour].append(travel_time)
-        
-        # Keep only last 100 values for each hour
-        if len(self.historical_averages[key][current_day][current_hour]) > 100:
-            self.historical_averages[key][current_day][current_hour] = self.historical_averages[key][current_day][current_hour][-100:]
-        
-        # Save updated historical data
-        self._save_historical_averages()
+        # Track travel time for current hour (using UTC)
+        current_hour = datetime.fromtimestamp(timestamp, tz=timezone.utc).hour
+        if key not in self.current_hour_travel_times:
+            self.current_hour_travel_times[key] = []
+        self.current_hour_travel_times[key].append(travel_time)
     
-    def get_eta(self, start_stop: str, end_stop: str) -> int:
+    def update_historical_averages(self, timestamp: float):
+        """Update historical averages using previous hour's travel times"""
+        # Convert timestamp to UTC datetime
+        utc_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        current_hour = utc_dt.hour
+        current_day = utc_dt.strftime('%A')
+        
+        # If we have previous hour's data, use it to update historical averages
+        if self.previous_hour_travel_times:
+            for key, times in self.previous_hour_travel_times.items():
+                if times:  # Only update if we have travel times
+                    avg_time = sum(times) / len(times)
+                    
+                    # Update historical averages
+                    if key not in self.historical_averages:
+                        self.historical_averages[key] = {}
+                    if current_day not in self.historical_averages[key]:
+                        self.historical_averages[key][current_day] = {}
+                    if current_hour not in self.historical_averages[key][current_day]:
+                        self.historical_averages[key][current_day][current_hour] = []
+                    
+                    self.historical_averages[key][current_day][current_hour].append(avg_time)
+                    
+                    # Keep only last 100 values for each hour
+                    if len(self.historical_averages[key][current_day][current_hour]) > 100:
+                        self.historical_averages[key][current_day][current_hour] = self.historical_averages[key][current_day][current_hour][-100:]
+            
+            # Save updated historical data
+            self._save_historical_averages()
+        
+        # Move current hour's data to previous hour and clear current hour
+        self.previous_hour_travel_times = self.current_hour_travel_times.copy()
+        self.current_hour_travel_times = {}
+    
+    def get_eta(self, start_stop: str, end_stop: str, device_id: int) -> int:
         """Calculate ETA using weighted average of live and historical data"""
         key = f"{start_stop}_{end_stop}"
-        current_hour = datetime.now().hour
-        current_day = datetime.now().strftime('%A')
+        # Use UTC for current time
+        current_time = datetime.now(timezone.utc)
+        current_hour = current_time.hour
+        current_day = current_time.strftime('%A')
         
-        # Get live data (if available and recent)
+        # Get live data from segment_times cache (if available and recent)
         live_time = None
         if key in self.segment_times:
-            cache_entry = self.segment_times[key]
-            if datetime.now().timestamp() - cache_entry['timestamp'] < 3600:  # Less than 1 hour old
-                live_time = cache_entry['time']
+            # Get the most recent travel time for this device
+            device_times = {k: v for k, v in self.segment_times[key].items() if k[0] == device_id}
+            if device_times:
+                # Get the most recent entry
+                latest_key = max(device_times.keys(), key=lambda x: x[1])
+                cache_age = current_time.timestamp() - latest_key[1]
+                if cache_age < 3600:  # Less than 1 hour old
+                    live_time = device_times[latest_key]
+                    logging.info(f"Using live data from cache: {live_time} seconds (age: {cache_age:.0f} seconds)")
         
         # Get historical average
         historical_time = None
@@ -84,15 +148,21 @@ class TravelTimeTracker:
             times = self.historical_averages[key][current_day][current_hour]
             if times:
                 historical_time = sum(times) / len(times)
+                logging.info(f"Using historical average: {historical_time:.0f} seconds")
         
         # Calculate weighted average (60% live, 40% historical)
         if live_time is not None and historical_time is not None:
-            return int(0.6 * live_time + 0.4 * historical_time)
+            eta = int(0.6 * live_time + 0.4 * historical_time)
+            logging.info(f"Calculated weighted ETA: {eta} seconds (60% live, 40% historical)")
+            return eta
         elif live_time is not None:
+            logging.info(f"Using only live data: {live_time} seconds")
             return live_time
         elif historical_time is not None:
+            logging.info(f"Using only historical data: {historical_time:.0f} seconds")
             return int(historical_time)
         else:
+            logging.warning("No data available, using default: 300 seconds")
             return 300  # Default 5 minutes if no data available
 
 class BusState:
@@ -101,10 +171,10 @@ class BusState:
         self.current_location = None
         self.previous_location = None
         self.current_segment = None
-        self.segment_entry_time = None  # Time when entering a segment
+        self.segment_entry_time = None  # Float timestamp when entering a segment
         self.direction = None
         self.route_info = None
-        self.last_location_time = None
+        self.last_location_time = None  # Float timestamp
         self.visited_stops = []
 
 class BusTracker:
@@ -145,7 +215,7 @@ class BusTracker:
         # Initialize location history tracking
         self.location_history = {}  # device_id -> list of (lat, lon, timestamp)
     
-    def _store_location_history(self, device_id: int, lat: float, lon: float, timestamp: datetime):
+    def _store_location_history(self, device_id: int, lat: float, lon: float, timestamp: float):
         """Store location history for a device"""
         if device_id not in self.location_history:
             self.location_history[device_id] = []
@@ -259,7 +329,7 @@ class BusTracker:
         Check if a vehicle has crossed a stop between its previous and current location.
         """
         if any(loc is None for loc in [prev_location, current_location, stop_location]):
-            print("Missing location data for stop crossing check")
+            # print("Missing location data for stop crossing check")
             return False
             
         # Convert locations to tuples for geodesic calculations
@@ -267,39 +337,40 @@ class BusTracker:
         curr_coords = (current_location['lat'], current_location['lon'])
         stop_coords = (stop_location['stop_latitude'], stop_location['stop_longitude'])
         
-        print(f"\nStop Crossing Check:")
-        print(f"Previous location: {prev_coords}")
-        print(f"Current location: {curr_coords}")
-        print(f"Stop location: {stop_coords}")
+        # print(f"\nStop Crossing Check:")
+        # print(f"Previous location: {prev_coords}")
+        # print(f"Current location: {curr_coords}")
+        # print(f"Stop location: {stop_coords}")
         
         # 1. First check: Is the stop close enough to either the current or previous position?
         dist_to_prev = geodesic(prev_coords, stop_coords).meters
         dist_to_curr = geodesic(curr_coords, stop_coords).meters
         
-        print(f"Distance to previous location: {dist_to_prev:.2f} meters")
-        print(f"Distance to current location: {dist_to_curr:.2f} meters")
+        # print(f"Distance to previous location: {dist_to_prev:.2f} meters")
+        # print(f"Distance to current location: {dist_to_curr:.2f} meters")
         
         if dist_to_prev < threshold_meters or dist_to_curr < threshold_meters:
-            print("Stop is within threshold distance")
+            # print("Stop is within threshold distance")
             return True
         
         path_distance = geodesic(prev_coords, curr_coords).meters
-        print(f"Path distance: {path_distance:.2f} meters")
+        # print(f"Path distance: {path_distance:.2f} meters")
         
         if path_distance < 5:  # 5 meters threshold for significant movement
-            print("Insufficient movement (less than 5 meters)")
+            # print("Insufficient movement (less than 5 meters)")
             return False
         
         # Calculate distances from prev to stop and from stop to current
         dist_prev_to_stop = geodesic(prev_coords, stop_coords).meters
         dist_stop_to_curr = geodesic(stop_coords, curr_coords).meters
         
-        # Check if the stop is roughly on the path
+        # Check if the stop is roughly on the path (within reasonable error margin)
+        # due to GPS inaccuracy and road curvature
         is_on_path = abs(dist_prev_to_stop + dist_stop_to_curr - path_distance) < threshold_meters
-        print(f"Stop is on path: {is_on_path}")
         
         # Calculate bearings
         def calculate_bearing(point1, point2):
+            """Calculate the bearing between two points."""
             lat1, lon1 = math.radians(point1[0]), math.radians(point1[1])
             lat2, lon2 = math.radians(point2[0]), math.radians(point2[1])
             
@@ -309,7 +380,9 @@ class BusTracker:
             x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
             
             bearing = math.atan2(y, x)
+            # Convert to degrees
             bearing = math.degrees(bearing)
+            # Normalize to 0-360
             bearing = (bearing + 360) % 360
             
             return bearing
@@ -319,19 +392,13 @@ class BusTracker:
         bearing_prev_to_stop = calculate_bearing(prev_coords, stop_coords)
         bearing_stop_to_curr = calculate_bearing(stop_coords, curr_coords)
         
-        print(f"Bearing prev->curr: {bearing_prev_to_curr:.2f}°")
-        print(f"Bearing prev->stop: {bearing_prev_to_stop:.2f}°")
-        print(f"Bearing stop->curr: {bearing_stop_to_curr:.2f}°")
-        
         # Check if the bearings are roughly aligned
         def angle_diff(a, b):
+            """Calculate the absolute difference between two angles in degrees."""
             return min(abs(a - b), 360 - abs(a - b))
         
         alignment_prev_to_stop = angle_diff(bearing_prev_to_curr, bearing_prev_to_stop) < 60
         alignment_stop_to_curr = angle_diff(bearing_prev_to_curr, bearing_stop_to_curr) < 60
-        
-        print(f"Alignment prev->stop: {alignment_prev_to_stop}")
-        print(f"Alignment stop->curr: {alignment_stop_to_curr}")
         
         result = (is_on_path and 
                 alignment_prev_to_stop and 
@@ -339,7 +406,7 @@ class BusTracker:
                 dist_prev_to_stop < path_distance and 
                 dist_stop_to_curr < path_distance)
         
-        print(f"Final stop crossing result: {result}")
+        # print(f"Final stop crossing result: {result}")
         return result
     
     def _check_segment_crossing(self, bus_state: BusState) -> bool:
@@ -357,9 +424,9 @@ class BusTracker:
         if not closest_stop:
             return False
             
-        print(f"\nChecking segment crossing:")
-        print(f"Closest stop: {closest_stop['stop_name']} (ID: {closest_stop['stop_id']})")
-        print(f"Distance to stop: {distance:.3f} km")
+        logging.info(f"\nChecking segment crossing:")
+        logging.info(f"Closest stop: {closest_stop['stop_name']} (ID: {closest_stop['stop_id']})")
+        logging.info(f"Distance to stop: {distance:.3f} km")
         
         # If we have a current segment, check if we've crossed it
         if bus_state.current_segment:
@@ -371,52 +438,57 @@ class BusTracker:
                 bus_state.route_info['route_stops']['stop_id'] == bus_state.current_segment['end_stop']
             ].iloc[0]
             
-            print(f"Current segment: {start_stop['stop_name']} -> {end_stop['stop_name']}")
+            logging.info(f"Current segment: {start_stop['stop_name']} -> {end_stop['stop_name']}")
             
             if closest_stop['stop_id'] == bus_state.current_segment['end_stop']:
-                print(f"Found potential segment end: {closest_stop['stop_name']}")
+                logging.info(f"Found potential segment end: {closest_stop['stop_name']}")
                 
                 # Check if we've actually crossed the stop
-                if self._check_if_crossed_stop(
+                crossed = self._check_if_crossed_stop(
                     bus_state.previous_location,
                     bus_state.current_location,
                     closest_stop
-                ):
-                    print("Confirmed stop crossing!")
+                )
+                
+                if crossed:
+                    logging.info(f"Confirmed segment crossing: {start_stop['stop_name']} -> {end_stop['stop_name']}")
                     
-                    # Calculate travel time for the completed segment
-                    if bus_state.segment_entry_time:
-                        # Calculate actual time taken using the timestamps
-                        entry_time = bus_state.segment_entry_time
-                        exit_time = datetime.now()
-                        travel_time = int((exit_time - entry_time).total_seconds())
-                        
-                        print(f"\nSegment Time Calculation:")
-                        print(f"Start Stop: {start_stop['stop_name']} (ID: {bus_state.current_segment['start_stop']})")
-                        print(f"End Stop: {end_stop['stop_name']} (ID: {bus_state.current_segment['end_stop']})")
-                        print(f"Entry Time: {entry_time}")
-                        print(f"Exit Time: {exit_time}")
-                        print(f"Time Taken: {travel_time} seconds")
+                    # Calculate travel time for the segment
+                    if bus_state.segment_entry_time is not None:
+                        exit_time = bus_state.last_location_time
+                        travel_time = int(exit_time - bus_state.segment_entry_time)
                         
                         if 0 < travel_time < 3600:  # Valid time between 0 and 1 hour
-                            print(f"Updating segment time for {start_stop['stop_name']} -> {end_stop['stop_name']}")
+                            logging.info(f"Updating segment time for {start_stop['stop_name']} -> {end_stop['stop_name']}")
+                            logging.info(f"Entry time: {datetime.fromtimestamp(bus_state.segment_entry_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                            logging.info(f"Exit time: {datetime.fromtimestamp(exit_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                            logging.info(f"Travel time: {travel_time} seconds")
+                            
                             self.travel_time_tracker.update_segment_time(
                                 bus_state.current_segment['start_stop'],
                                 bus_state.current_segment['end_stop'],
-                                travel_time
+                                travel_time,
+                                exit_time,
+                                bus_state.device_id
                             )
+                            
+                            # Check if the hour has changed to update historical averages
+                            current_hour = datetime.fromtimestamp(exit_time, tz=timezone.utc).hour
+                            if not self.travel_time_tracker.last_historical_update_hour or current_hour != self.travel_time_tracker.last_historical_update_hour:
+                                self.travel_time_tracker.update_historical_averages(exit_time)
+                                self.travel_time_tracker.last_historical_update_hour = current_hour
                         else:
-                            print(f"Invalid travel time: {travel_time} seconds (skipping)")
+                            logging.warning(f"Invalid travel time: {travel_time} seconds (skipping)")
                     
                     # Set entry time for the new segment
-                    bus_state.segment_entry_time = datetime.now()
-                    print(f"Set new segment entry time: {bus_state.segment_entry_time}")
+                    bus_state.segment_entry_time = bus_state.last_location_time
+                    logging.info(f"Set new segment entry time: {datetime.fromtimestamp(bus_state.segment_entry_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
                     return True
                 else:
-                    print("Stop not crossed yet")
+                    logging.info("Stop not crossed yet")
         else:
             # Initialize first segment
-            print("No current segment, initializing first segment")
+            logging.info("No current segment, initializing first segment")
             neighbors = direction_determination.get_neighboring_stops(
                 bus_state.route_info['route_stops'],
                 closest_stop['stop_id']
@@ -424,39 +496,39 @@ class BusTracker:
             
             if not neighbors.empty:
                 next_stop = neighbors.iloc[0]
-                print(f"Found next stop: {next_stop['stop_name']} (ID: {next_stop['stop_id']})")
+                logging.info(f"Found next stop: {next_stop['stop_name']} (ID: {next_stop['stop_id']})")
                 
                 bus_state.current_segment = {
                     'start_stop': closest_stop['stop_id'],
                     'end_stop': next_stop['stop_id']
                 }
-                bus_state.segment_entry_time = datetime.now()
-                print(f"Initialized segment: {closest_stop['stop_name']} -> {next_stop['stop_name']}")
-                print(f"Set segment entry time: {bus_state.segment_entry_time}")
+                bus_state.segment_entry_time = bus_state.last_location_time
+                logging.info(f"Initialized segment: {closest_stop['stop_name']} -> {next_stop['stop_name']}")
+                logging.info(f"Set segment entry time: {datetime.fromtimestamp(bus_state.segment_entry_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 return True
             else:
-                print("No neighboring stops found")
+                logging.warning("No neighboring stops found")
         
         return False
     
-    def process_bus_location(self, device_id: int, lat: float, lon: float, timestamp: datetime):
+    def process_bus_location(self, device_id: int, lat: float, lon: float, timestamp: float):
         """Process a new bus location update"""
-        print(f"\nProcessing location update for device {device_id}:")
-        print(f"Location: ({lat}, {lon})")
-        print(f"Timestamp: {timestamp}")
+        logging.info(f"\nProcessing location update for device {device_id}:")
+        logging.info(f"Location: ({lat}, {lon})")
+        logging.info(f"Timestamp: {datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
         
         # Store location history
         self._store_location_history(device_id, lat, lon, timestamp)
         
         # Initialize bus state if needed
         if device_id not in self.active_buses:
-            print("Initializing new bus state")
+            logging.info("Initializing new bus state")
             bus_state = self._initialize_bus_state(device_id)
             if not bus_state:
-                print("Failed to initialize bus state")
+                logging.error("Failed to initialize bus state")
                 return
             self.active_buses[device_id] = bus_state
-            print("Bus state initialized successfully")
+            logging.info("Bus state initialized successfully")
         
         bus_state = self.active_buses[device_id]
         
@@ -468,7 +540,7 @@ class BusTracker:
         bus_state.last_location_time = timestamp
         
         # Check for segment crossing
-        print("\nChecking for segment crossing...")
+        logging.info("\nChecking for segment crossing...")
         self._check_segment_crossing(bus_state)
     
     def get_bus_eta(self, device_id: int, target_stop: str) -> Optional[int]:
@@ -504,7 +576,7 @@ class BusTracker:
         # Calculate total ETA
         total_eta = 0
         for segment in remaining_segments:
-            eta = self.travel_time_tracker.get_eta(segment['start'], segment['end'])
+            eta = self.travel_time_tracker.get_eta(segment['start'], segment['end'], device_id)
             total_eta += eta
             
         return total_eta
@@ -525,11 +597,18 @@ class BusTracker:
         return segments 
 
 if __name__ == "__main__":
+    # Setup logging
+    log_file = setup_logging()
+    logging.info(f"Starting bus tracker. Logs will be saved to: {log_file}")
+    
     # Load synthetic data for testing
     try:
         synthetic_data = pd.read_csv('data/generated_bus_route_data.csv')
         if not pd.api.types.is_datetime64_dtype(synthetic_data['date']):
+            # First convert to datetime without timezone
             synthetic_data['date'] = pd.to_datetime(synthetic_data['date'])
+            # Then convert to UTC by adding the timezone info
+            synthetic_data['date'] = synthetic_data['date'].dt.tz_localize('UTC')
         
         # Test with a sample device ID
         if not synthetic_data.empty:
@@ -541,31 +620,33 @@ if __name__ == "__main__":
             # Process each location update for the device
             device_data = synthetic_data[synthetic_data['deviceId'] == sample_device_id].sort_values('date')
             
-            print(f"\nProcessing {len(device_data)} location updates for device {sample_device_id}")
-            print("=" * 80)
+            logging.info(f"Processing {len(device_data)} location updates for device {sample_device_id}")
+            logging.info("=" * 80)
             
             # Variables to store info for logging
             route_info = None
             
             for _, row in device_data.iterrows():
-                print(f"\nProcessing location at {row['date']}:")
-                print(f"Latitude: {row['lat']}, Longitude: {row['long']}")
+                # Convert UTC datetime to timestamp
+                utc_timestamp = row['date'].timestamp()
+                logging.info(f"\nProcessing location at {row['date'].strftime('%Y-%m-%d %H:%M:%S')} UTC:")
+                logging.info(f"Latitude: {row['lat']}, Longitude: {row['long']}")
                 
-                # Process the location update
+                # Process the location update with UTC timestamp
                 tracker.process_bus_location(
                     device_id=row['deviceId'],
                     lat=row['lat'],
                     lon=row['long'],
-                    timestamp=row['date']
+                    timestamp=utc_timestamp
                 )
                 
                 # Get bus state
                 if row['deviceId'] in tracker.active_buses:
                     bus_state = tracker.active_buses[row['deviceId']]
                     if bus_state.current_segment:
-                        print(f"Current segment: {bus_state.current_segment['start_stop']} -> {bus_state.current_segment['end_stop']}")
+                        logging.info(f"Current segment: {bus_state.current_segment['start_stop']} -> {bus_state.current_segment['end_stop']}")
                         if bus_state.segment_entry_time:
-                            print(f"Segment entry time: {bus_state.segment_entry_time}")
+                            logging.info(f"Segment entry time: {datetime.fromtimestamp(bus_state.segment_entry_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
                     
                     # Store route info for final summary
                     if bus_state.route_info and route_info is None:
@@ -576,7 +657,7 @@ if __name__ == "__main__":
                             'stops': bus_state.route_info['route_stops'].head().to_dict('records')
                         }
                 
-                print("-" * 80)
+                logging.info("-" * 80)
             
             # Generate filename with route info
             if route_info:
@@ -584,15 +665,16 @@ if __name__ == "__main__":
             else:
                 filename_base = f"time_data_device{sample_device_id}"
             
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # Use UTC timestamp for filename
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
             time_data_file = f'{filename_base}_{timestamp}.json'
             
-            # Convert segment times to serializable format
+            # Convert segment times to serializable format with UTC timestamps
             segment_times = {}
             for key, value in tracker.travel_time_tracker.segment_times.items():
                 segment_times[key] = {
                     'time': value['time'],
-                    'timestamp': datetime.fromtimestamp(value['timestamp']).isoformat()
+                    'timestamp': datetime.fromtimestamp(value['timestamp'], tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + ' UTC'
                 }
             
             # Save data to file
@@ -600,26 +682,27 @@ if __name__ == "__main__":
                 json.dump(segment_times, f, indent=2)
             
             # Print final summary
-            print("\nFinal Summary:")
-            print("=" * 80)
+            logging.info("\nFinal Summary:")
+            logging.info("=" * 80)
             
             if route_info:
-                print("\nRoute Information:")
-                print(f"Fleet Number: {route_info['fleet_number']}")
-                print(f"Route Number: {route_info['route_number']}")
-                print(f"Tummoc ID: {route_info['tummoc_id']}")
-                print("\nFirst 5 stops in route:")
+                logging.info("\nRoute Information:")
+                logging.info(f"Fleet Number: {route_info['fleet_number']}")
+                logging.info(f"Route Number: {route_info['route_number']}")
+                logging.info(f"Tummoc ID: {route_info['tummoc_id']}")
+                logging.info("\nFirst 5 stops in route:")
                 for stop in route_info['stops']:
-                    print(f"- {stop['stop_name']} (ID: {stop['stop_id']})")
+                    logging.info(f"- {stop['stop_name']} (ID: {stop['stop_id']})")
             
-            print("\nTravel Time Statistics:")
-            print("=" * 80)
+            logging.info("\nTravel Time Statistics:")
+            logging.info("=" * 80)
             for key, value in segment_times.items():
-                print(f"Segment {key}: {value['time']} seconds (last updated: {value['timestamp']})")
+                logging.info(f"Segment {key}: {value['time']} seconds (last updated: {value['timestamp']})")
             
-            print(f"\nTime data saved to: {time_data_file}")
+            logging.info(f"\nTime data saved to: {time_data_file}")
+            logging.info(f"Logs saved to: {log_file}")
             
     except Exception as e:
-        print(f"Error testing bus tracker: {e}")
+        logging.error(f"Error testing bus tracker: {e}")
         import traceback
-        print(traceback.format_exc()) 
+        logging.error(traceback.format_exc()) 
