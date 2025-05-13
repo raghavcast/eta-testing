@@ -1,0 +1,7 @@
+*.json
+
+logs/
+
+*.log
+
+logs/.log
