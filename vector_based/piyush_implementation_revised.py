@@ -17,6 +17,14 @@ import re
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 log_file = f'logs/piyush_implementation_revised_{timestamp}.log'
 
+# Route 109 has data.
+# K0632 has correct route data. (862607059085323)
+# K0377 has wrong route data. (867032053786161)
+# This is for 02/05/2025
+
+SELECTED_DEVICE_ID = 862607059085323 # Change as necessary
+SELECTED_DATE = pd.to_datetime("2025-05-02T00:00:00", format='%Y-%m-%dT%H:%M:%S')
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -33,10 +41,10 @@ logging.getLogger('').addHandler(console)
 logger = logging.getLogger('piyush-implementation-revised')
 
 # File paths
-VEHICLE_NUM_MAPPING_PATH = os.getenv('VEHICLE_NUM_MAPPING_PATH', 'data/vehicle_num_mapping.csv')
+VEHICLE_NUM_MAPPING_PATH = os.getenv('VEHICLE_NUM_MAPPING_PATH', 'data/fleet_device_mapping.csv')
 WAYBILL_METABASE_PATH = os.getenv('WAYBILL_METABASE_PATH', 'data/waybill_metabase.csv')
 ROUTE_STOP_MAPPING_PATH = os.getenv('ROUTE_STOP_MAPPING_PATH', 'data/route_stop_mapping.csv')
-GPS_DATA_PATH = os.getenv('GPS_DATA_PATH', 'data/generated_bus_route_data.csv')
+GPS_DATA_PATH = os.getenv('GPS_DATA_PATH', 'data/amnex_direct_data.csv')
 CACHE_OUTPUT_PATH = os.getenv('CACHE_OUTPUT_PATH', f'travel_time_cache_{timestamp}.json')
 
 # Constants
@@ -105,9 +113,23 @@ def load_csv_data():
         waybill_df = pd.read_csv(WAYBILL_METABASE_PATH, low_memory=False)
         route_stop_df = pd.read_csv(ROUTE_STOP_MAPPING_PATH)
         gps_df = pd.read_csv(GPS_DATA_PATH)
-        
+        logger.info(f"Before filtering dates: {len(gps_df)}")
+        gps_df['Date'] = pd.to_datetime(gps_df['Date'], format='%Y-%m-%dT%H:%M:%S', errors='coerce')
+        gps_df['Timestamp'] = pd.to_datetime(gps_df['Timestamp'], format='%Y-%m-%dT%H:%M:%S', errors='coerce')
+        gps_df['ServerTime'] = pd.to_datetime(gps_df['ServerTime'], format='%Y-%m-%dT%H:%M:%S', errors='coerce')
+        gps_df = gps_df.dropna(subset=['Date', 'Timestamp', 'ServerTime'])
+        logger.info(f"After filtering dates: {len(gps_df)}")
+
+        filtered_gps_df = gps_df[
+            (gps_df['DeviceId'] == SELECTED_DEVICE_ID) &
+            (gps_df['Date'].dt.date == pd.to_datetime(SELECTED_DATE).date()) &
+            (abs(pd.to_timedelta(gps_df['Timestamp'].dt.strftime('%H:%M:%S')) - pd.to_timedelta(gps_df['Date'].dt.strftime('%H:%M:%S'))) <= pd.Timedelta(hours=6)) &
+            (gps_df['DataState'].str.contains('L') )
+        ]
+        logger.info(f"Filtered GPS data for device {SELECTED_DEVICE_ID} on {SELECTED_DATE} with {len(filtered_gps_df)} points.")
+        logger.info(len(vehicle_mapping_df))
         logger.info("CSV data files loaded successfully.")
-        return vehicle_mapping_df, waybill_df, route_stop_df, gps_df
+        return vehicle_mapping_df, waybill_df, route_stop_df, filtered_gps_df
     except Exception as e:
         logger.error(f"Error loading CSV data: {e}")
         traceback.print_exc()
@@ -119,8 +141,9 @@ vehicle_mapping_df, waybill_df, route_stop_df, gps_df = load_csv_data()
 def build_mappings():
     logger.info("Building data mappings...")
     # Device to vehicle mapping
-    device_to_vehicle = dict(zip(vehicle_mapping_df['Device Id'], vehicle_mapping_df['Vehicle No']))
-    
+    device_id = vehicle_mapping_df['Obu Iemi'].fillna(0).astype(int)
+    device_to_vehicle = dict(zip(device_id.astype(str), vehicle_mapping_df['Fleet']))
+    logger.info(f"Device to vehicle mapping: {device_to_vehicle}")
     # Extract route number from schedule number
     def extract_route_no(schedule_no):
         m = re.search(r'^.*?-(.+?)-', str(schedule_no))
@@ -720,7 +743,10 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 def get_fleet_info(device_id: str, current_lat: float = None, current_lon: float = None, timestamp: int = None) -> dict:
     """Get both fleet number and route ID for a device"""
     cache_key = f"fleetInfo:{device_id}"
-    
+    # logger.info(f"Cache key: {cache_key}")
+    # logger.info(f"Current lat: {current_lat}")
+    # logger.info(f"Current lon: {current_lon}")
+    # logger.info(f"Timestamp: {timestamp}")
     # Check cache first
     fleet_info = cache.get(cache_key)
     if fleet_info is not None:
@@ -730,12 +756,14 @@ def get_fleet_info(device_id: str, current_lat: float = None, current_lon: float
     
     try:
         # Get fleet number for device from our mappings
-        vehicle_no = device_to_vehicle.get(device_id)
+        vehicle_no = device_to_vehicle.get(str(device_id))
+        logger.info(f"Vehicle no: {vehicle_no}")
         if not vehicle_no:
             return {}
 
         # Get route for fleet
         route_no = vehicle_to_route.get(vehicle_no)
+        logger.info(f"Route no: {route_no}")
         if not route_no:
             return {}
             
@@ -771,21 +799,20 @@ def handle_gps_data():
     logger.info("Processing GPS data...")
     
     # Group by deviceId for better processing efficiency
-    for device_id, group in gps_df.groupby('deviceId'):
-        points = group.sort_values('date')  # Sort by timestamp
-        
+    for device_id, group in gps_df.groupby('DeviceId'):
+        points = group.sort_values('Date')  # Sort by timestamp
         for i, row in points.iterrows():
             try:
-                current_lat = row['lat']
-                current_lon = row['long']
-                timestamp = pd.to_datetime(row['date']).timestamp()
+                current_lat = row['Lat']
+                current_lon = row['Long']
+                timestamp = row['Date'].timestamp()
                 
                 # Get fleet and route info
                 fleet_info = get_fleet_info(device_id, current_lat, current_lon, timestamp)
                 
                 if not fleet_info or 'route_id' not in fleet_info or fleet_info["route_id"] is None:
                     continue
-                    
+                logger.info(f"Fleet info: {fleet_info}")
                 route_id = fleet_info['route_id']
                 vehicle_no = fleet_info['vehicle_no']
                 
