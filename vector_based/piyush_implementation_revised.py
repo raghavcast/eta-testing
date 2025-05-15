@@ -18,11 +18,11 @@ timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 log_file = f'logs/piyush_implementation_revised_{timestamp}.log'
 
 # Route 109 has data.
-# K0632 has correct route data. (862607059085323)
-# K0377 has wrong route data. (867032053786161)
+# K0632 has wrong route data. (862607059085323)
+# K0377 has correct route data. (867032053786161)
 # This is for 02/05/2025
 
-SELECTED_DEVICE_ID = 862607059085323 # Change as necessary
+SELECTED_DEVICE_ID = 867032053786161 # Change as necessary
 SELECTED_DATE = pd.to_datetime("2025-05-02T00:00:00", format='%Y-%m-%dT%H:%M:%S')
 
 # Configure logging
@@ -46,6 +46,10 @@ WAYBILL_METABASE_PATH = os.getenv('WAYBILL_METABASE_PATH', 'data/waybill_metabas
 ROUTE_STOP_MAPPING_PATH = os.getenv('ROUTE_STOP_MAPPING_PATH', 'data/route_stop_mapping.csv')
 GPS_DATA_PATH = os.getenv('GPS_DATA_PATH', 'data/amnex_direct_data.csv')
 CACHE_OUTPUT_PATH = os.getenv('CACHE_OUTPUT_PATH', f'travel_time_cache_{timestamp}.json')
+ROUTE_POLYLINE_PATH = os.getenv('ROUTE_POLYLINE_PATH', 'data/pgrider_route.csv')
+INTEGRATED_BPP_CONFIG_PATH = os.getenv('INTEGRATED_BPP_CONFIG_PATH', 'data/pgrider_integrated_bpp_config.csv')
+MERCHANT_ID_PATH = os.getenv('MERCHANT_ID_PATH', 'data/pgrider_merchant.csv')
+MERCHANT_OPERATING_CITY_ID_PATH = os.getenv('MERCHANT_OPERATING_CITY_ID_PATH', 'data/pgrider_merchant_operating_city.csv')
 
 # Constants
 STOP_VISIT_RADIUS = float(os.getenv('STOP_VISIT_RADIUS', '0.05'))  # 50 meters in km
@@ -112,6 +116,25 @@ def load_csv_data():
         vehicle_mapping_df = pd.read_csv(VEHICLE_NUM_MAPPING_PATH)
         waybill_df = pd.read_csv(WAYBILL_METABASE_PATH, low_memory=False)
         route_stop_df = pd.read_csv(ROUTE_STOP_MAPPING_PATH)
+        
+        route_polyline_df = pd.read_csv(ROUTE_POLYLINE_PATH)
+        integrated_bpp_config_df = pd.read_csv(INTEGRATED_BPP_CONFIG_PATH)
+        merchant_id_df = pd.read_csv(MERCHANT_ID_PATH)
+        merchant_operating_city_id_df = pd.read_csv(MERCHANT_OPERATING_CITY_ID_PATH)
+        
+        merchant_id = merchant_id_df[merchant_id_df['Short ID'] == 'NAMMA_YATRI']['ID'].values[0]
+        logger.info(f"Merchant ID: {merchant_id}")
+        merchant_operating_city_id = merchant_operating_city_id_df[
+            (merchant_operating_city_id_df['Merchant ID'] == merchant_id) &
+            (merchant_operating_city_id_df['City'] == 'Chennai')
+        ]['ID'].values[0]
+        integrated_bpp_config = integrated_bpp_config_df[
+            (integrated_bpp_config_df['Merchant Operating City ID'] == merchant_operating_city_id) &
+            (integrated_bpp_config_df['Vehicle Category'] == 'BUS')
+        ]['ID'].values[0]
+
+        filtered_route_polyline_df = route_polyline_df[route_polyline_df['Integrated Bpp Config ID'] == integrated_bpp_config]
+        
         gps_df = pd.read_csv(GPS_DATA_PATH)
         logger.info(f"Before filtering dates: {len(gps_df)}")
         gps_df['Date'] = pd.to_datetime(gps_df['Date'], format='%Y-%m-%dT%H:%M:%S', errors='coerce')
@@ -129,14 +152,14 @@ def load_csv_data():
         logger.info(f"Filtered GPS data for device {SELECTED_DEVICE_ID} on {SELECTED_DATE} with {len(filtered_gps_df)} points.")
         logger.info(len(vehicle_mapping_df))
         logger.info("CSV data files loaded successfully.")
-        return vehicle_mapping_df, waybill_df, route_stop_df, filtered_gps_df
+        return vehicle_mapping_df, waybill_df, route_stop_df, filtered_gps_df, filtered_route_polyline_df
     except Exception as e:
         logger.error(f"Error loading CSV data: {e}")
         traceback.print_exc()
-        return None, None, None, None
+        return None, None, None, None, None
 
 # Load CSV data
-vehicle_mapping_df, waybill_df, route_stop_df, gps_df = load_csv_data()
+vehicle_mapping_df, waybill_df, route_stop_df, gps_df, route_polyline_df = load_csv_data()
 
 def build_mappings():
     logger.info("Building data mappings...")
@@ -474,8 +497,8 @@ class StopTracker:
         
         # Make sure we're storing location history for both device_id and vehicle_no
         if vehicle_no is not None and vehicle_id is not None:
-            store_vehicle_location_history(vehicle_id, vehicle_lat, vehicle_lon, int(current_time.timestamp()))
             store_vehicle_location_history(vehicle_no, vehicle_lat, vehicle_lon, int(current_time.timestamp()))
+            store_vehicle_location_history(vehicle_id, vehicle_lat, vehicle_lon, int(current_time.timestamp()))
         
         # Check if the vehicle is at a stop now
         for stop in stops:
@@ -740,19 +763,204 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     
     return c * r
 
+def decode_polyline(polyline_str):
+    """Decode a Google encoded polyline to list of lat/lon points"""
+    if not polyline_str:
+        return []
+    try:
+        return gpolyline.decode(polyline_str)
+    except Exception as e:
+        logger.error(f"Error decoding polyline: {e}")
+        return []
+
+def is_point_near_polyline(point_lat, point_lon, polyline_points, max_distance_meter=50):
+    """
+    Check if a point is within max_distance_meter of any segment of the polyline.
+    Returns (is_near, distance, segment_index)
+    """
+    if not polyline_points or len(polyline_points) < 2:
+        return False, float('inf'), None
+        
+    min_distance = float('inf')
+    min_segment = None
+    
+    # Check each segment of the polyline
+    for i in range(len(polyline_points) - 1):
+        # Start and end points of current segment
+        p1_lat, p1_lon = polyline_points[i]
+        p2_lat, p2_lon = polyline_points[i + 1]
+        
+        # Calculate distances to segment endpoints
+        d1 = calculate_distance(point_lat, point_lon, p1_lat, p1_lon)
+        d2 = calculate_distance(point_lat, point_lon, p2_lat, p2_lon)
+        
+        # Calculate length of segment
+        segment_length = calculate_distance(p1_lat, p1_lon, p2_lat, p2_lon)
+        
+        # Use the simplified distance formula (works well for short segments)
+        if segment_length > 0:
+            # Projection calculation
+            # Vector from p1 to p2
+            v1x = p2_lon - p1_lon
+            v1y = p2_lat - p1_lat
+            
+            # Vector from p1 to point
+            v2x = point_lon - p1_lon
+            v2y = point_lat - p1_lat
+            
+            # Dot product
+            dot = v1x * v2x + v1y * v2y
+            
+            # Squared length of segment
+            len_sq = v1x * v1x + v1y * v1y
+            
+            # Projection parameter (t)
+            t = max(0, min(1, dot / len_sq))
+            
+            # Projected point
+            proj_x = p1_lon + t * v1x
+            proj_y = p1_lat + t * v1y
+            
+            # Distance to projection
+            distance = calculate_distance(point_lat, point_lon, proj_y, proj_x)
+        else:
+            # If segment is very short, just use distance to p1
+            distance = d1
+            
+        # Update minimum distance
+        if distance < min_distance:
+            min_segment = i
+            min_distance = distance
+            
+    # Check if within threshold (convert meters to kilometers)
+    max_distance_km = max_distance_meter / 1000
+    return min_distance <= max_distance_km, min_distance, min_segment
+
+def calculate_route_match_score(route_id, vehicle_id, route_stops, location_history, max_distance_meter=100):
+    """
+    Calculate how well a route matches a vehicle's location history.
+    Returns a score between 0 and 1, where 1 is a perfect match.
+    """
+    try:
+        # Check if we have a polyline
+        polyline_points = []
+        min_points_required = 4
+        
+        # If route_stops has a polyline, use it
+        if isinstance(route_stops, dict) and 'polyline' in route_stops and route_stops['polyline']:
+            polyline_points = decode_polyline(route_stops['polyline'])
+        
+        # If no polyline or decode failed, use the stops to build a polyline
+        if not polyline_points and isinstance(route_stops, dict) and 'stops' in route_stops:
+            stops = route_stops['stops']
+            polyline_points = [(float(stop['stop_lat']), float(stop['stop_lon'])) for stop in stops]
+            min_points_required = min(10, len(stops) // 2)  # Require more points when using stops
+        
+        # Check if we have enough location history
+        if not location_history or len(location_history) < min_points_required:
+            logger.info(f"Not enough location history for route {route_id}, vehicle {vehicle_id}: {len(location_history)} points (need {min_points_required})")
+            return 0.0
+        
+        # Check if we have enough polyline points
+        if not polyline_points or len(polyline_points) < 2:
+            logger.info(f"Not enough polyline points for route {route_id}: {len(polyline_points) if polyline_points else 0}")
+            return 0.0
+            
+        # Sort location_history by timestamp to ensure chronological order
+        location_history = sorted(location_history, key=lambda x: x.get('timestamp', 0))
+        logger.info(f"Location history: {location_history}")
+        # Count how many points are near the polyline
+        near_points = []
+        total_distance = 0.0
+        min_segments = []
+        
+        for point in location_history:
+            try:
+                is_near, distance, segment_idx = is_point_near_polyline(
+                    point['lat'], point['lon'], polyline_points, max_distance_meter
+                )
+                
+                if is_near:
+                    near_points.append(point)
+                    total_distance += distance
+                    if segment_idx is not None:
+                        min_segments.append(segment_idx)
+            except Exception as e:
+                logger.error(f"Error checking if point is near polyline: {e}")
+                continue
+                
+        # Calculate proximity score (0-1)
+        proximity_ratio = len(near_points) / len(location_history) if location_history else 0
+        
+        # Only proceed if enough points are near the polyline
+        if proximity_ratio >= 0.3 and len(min_segments) >= 2:
+            # Check if points are generally moving in the correct direction
+            # For simplicity, we'll check if the first segment is one of the earliest segments
+            if min(min_segments) == min_segments[0]:
+                logger.info(f"Route match for {route_id}, vehicle {vehicle_id}: {len(near_points)}/{len(location_history)} points, score: {proximity_ratio:.2f}")
+                return proximity_ratio
+                
+        logger.info(f"Route match for {route_id}, vehicle {vehicle_id}: {len(near_points)}/{len(location_history)} points, rejected due to direction check")
+        return 0.0
+                
+    except Exception as e:
+        logger.error(f"Error calculating route match score: {e}")
+        return 0.0
+
 def get_fleet_info(device_id: str, current_lat: float = None, current_lon: float = None, timestamp: int = None) -> dict:
-    """Get both fleet number and route ID for a device"""
+    """Get both fleet number and route ID for a device using improved route matching with dynamic reassignment"""
     cache_key = f"fleetInfo:{device_id}"
-    # logger.info(f"Cache key: {cache_key}")
-    # logger.info(f"Current lat: {current_lat}")
-    # logger.info(f"Current lon: {current_lon}")
-    # logger.info(f"Timestamp: {timestamp}")
-    # Check cache first
+    cache_ttl = 300  # Cache validity in seconds (5 minutes) - shorter to allow route reassessment
+    
+    # Check cache first, but verify if it's still the best match
     fleet_info = cache.get(cache_key)
-    if fleet_info is not None:
-        if current_lat is not None and current_lon is not None:
-            store_vehicle_location_history(fleet_info['vehicle_no'], current_lat, current_lon, timestamp)
-        return fleet_info
+    force_reassessment = False
+    
+    if fleet_info is not None and current_lat is not None and current_lon is not None and timestamp is not None:
+        # Always store new location data
+        store_vehicle_location_history(fleet_info['vehicle_no'], current_lat, current_lon, timestamp)
+        store_vehicle_location_history(device_id, current_lat, current_lon, timestamp)
+        
+        # Check if we should reevaluate the route (every 300 seconds / 5 minutes or after 10 new points)
+        vehicle_history = get_vehicle_location_history(fleet_info['vehicle_no'])
+        if len(vehicle_history) > 20:  # Have enough history to make a good decision
+            # Check timestamp of last assessment
+            last_assessment = fleet_info.get('last_route_assessment', 0)
+            current_time = int(time.time()) if timestamp is None else timestamp
+            
+            # Force reassessment if:
+            # 1. It's been over 5 minutes since last assessment, or
+            # 2. We've moved a significant distance from the route (over 100m from expected route)
+            if current_time - last_assessment > 300:
+                force_reassessment = True
+                logger.info(f"Time-based route reassessment for vehicle {fleet_info['vehicle_no']}")
+            else:
+                # Verify if current position is still on expected route
+                if 'route_id' in fleet_info and fleet_info['route_id']:
+                    current_route_id = fleet_info['route_id']
+                    route_stops = stop_tracker.get_route_stops(current_route_id)
+                    
+                    # Check if we're still on this route
+                    if route_stops and 'polyline' in route_stops and route_stops['polyline']:
+                        polyline_points = decode_polyline(route_stops['polyline'])
+                        
+                        if polyline_points:
+                            # Check if current position is near the route
+                            is_near, distance, _ = is_point_near_polyline(
+                                current_lat, current_lon, polyline_points, 100
+                            )
+                            
+                            if not is_near:
+                                logger.info(f"Vehicle {fleet_info['vehicle_no']} position is far from route {current_route_id} (distance: {distance*1000:.1f}m), forcing reassessment")
+                                force_reassessment = True
+                                
+        # If no reassessment needed, return cached info
+        if not force_reassessment:
+            return fleet_info
+        
+        # Otherwise, clear cache and re-evaluate below
+        logger.info(f"Clearing cache for vehicle {device_id} to force route reassessment")
+        cache.cache.pop(cache_key, None)
     
     try:
         # Get fleet number for device from our mappings
@@ -769,21 +977,92 @@ def get_fleet_info(device_id: str, current_lat: float = None, current_lon: float
             
         # Get tummoc route id(s)
         tummoc_route_ids = route_no_to_tummoc.get(route_no, [])
-        # For simplicity, just use the first one
-        route_id = list(tummoc_route_ids)[0] if tummoc_route_ids else None
+        
+        # If we have only one route ID, use it directly
+        if len(tummoc_route_ids) == 1:
+            route_id = list(tummoc_route_ids)[0]
+            logger.info(f"Single route ID found for {route_no}: {route_id}")
+        else:
+            # If we have multiple route IDs, find the best match using location history
+            best_route_id = None
+            best_score = 0.0
+            
+            # Store current location first to include it in history
+            if current_lat is not None and current_lon is not None:
+                store_vehicle_location_history(vehicle_no, current_lat, current_lon, timestamp)
+                store_vehicle_location_history(device_id, current_lat, current_lon, timestamp)
+            
+            # Get location history
+            location_history = get_vehicle_location_history(vehicle_no)
+            if len(location_history) < 5:
+                # Try device_id if vehicle_no history is insufficient
+                location_history = get_vehicle_location_history(device_id)
+            
+            # If we're doing a reassessment with a lot of history, consider only the most recent points
+            # This helps if the vehicle has already deviated onto a different branch
+            if force_reassessment and len(location_history) > 10:
+                # Use the most recent 10 points for reassessment, as they're more indicative of current route
+                recent_location_history = location_history[-10:]
+                logger.info(f"Using {len(recent_location_history)} recent points for route reassessment")
+            else:
+                recent_location_history = location_history
+                
+            # If we still don't have enough history, use the first route
+            if len(recent_location_history) < 5:
+                logger.info(f"Not enough location history for {vehicle_no}, using first route")
+                route_id = list(tummoc_route_ids)[0] if tummoc_route_ids else None
+            else:
+                # Calculate match score for each route
+                route_scores = []
+                for candidate_route_id in tummoc_route_ids:
+                    # Get route stops information
+                    route_stops = stop_tracker.get_route_stops(candidate_route_id)
+                    
+                    # Calculate match score
+                    score = calculate_route_match_score(
+                        candidate_route_id,
+                        vehicle_no,
+                        route_stops,
+                        recent_location_history
+                    )
+                    
+                    route_scores.append((candidate_route_id, score))
+                    logger.info(f"Route {candidate_route_id} score: {score}")
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_route_id = candidate_route_id
+                
+                # Only use the best route if it has a reasonable score
+                if best_score >= 0.3:
+                    route_id = best_route_id
+                    logger.info(f"Selected best route {route_id} with score {best_score:.2f}")
+                else:
+                    # Fall back to first route if no good match
+                    route_id = list(tummoc_route_ids)[0] if tummoc_route_ids else None
+                    logger.info(f"No good route match, using first route {route_id}")
+                    
+                    # If we're doing a reassessment, check if we need to keep the current route
+                    if force_reassessment and fleet_info and 'route_id' in fleet_info:
+                        current_route = fleet_info['route_id']
+                        # Find the score for the current route
+                        current_route_score = next((score for route, score in route_scores if route == current_route), 0.0)
+                        
+                        # If the current route still has some match and no clear winner,
+                        # stick with the current route to avoid unnecessary changes
+                        if current_route_score > 0.15 and best_score < 0.4:
+                            route_id = current_route
+                            logger.info(f"Keeping current route {route_id} (score: {current_route_score:.2f})")
         
         val = {
             'vehicle_no': vehicle_no,
             'device_id': device_id,
-            'route_id': route_id
+            'route_id': route_id,
+            'last_route_assessment': int(time.time()) if timestamp is None else timestamp
         }
         
-        # Store in cache
+        # Store in cache with shorter TTL to allow for reassessments
         cache.set(cache_key, val)
-        
-        # Store location history
-        if current_lat is not None and current_lon is not None:
-            store_vehicle_location_history(vehicle_no, current_lat, current_lon, timestamp)
             
         return val
 
@@ -812,7 +1091,7 @@ def handle_gps_data():
                 
                 if not fleet_info or 'route_id' not in fleet_info or fleet_info["route_id"] is None:
                     continue
-                logger.info(f"Fleet info: {fleet_info}")
+                # logger.info(f"Fleet info: {fleet_info}")
                 route_id = fleet_info['route_id']
                 vehicle_no = fleet_info['vehicle_no']
                 
