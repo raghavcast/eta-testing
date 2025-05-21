@@ -42,7 +42,7 @@ logger = logging.getLogger('piyush-implementation-revised')
 
 # File paths
 VEHICLE_NUM_MAPPING_PATH = os.getenv('VEHICLE_NUM_MAPPING_PATH', 'data/fleet_device_mapping.csv')
-WAYBILL_METABASE_PATH = os.getenv('WAYBILL_METABASE_PATH', 'data/waybill_metabase.csv')
+WAYBILL_METABASE_PATH = os.getenv('WAYBILL_METABASE_PATH', 'data/waybill_metabase_joined.csv')
 ROUTE_STOP_MAPPING_PATH = os.getenv('ROUTE_STOP_MAPPING_PATH', 'data/route_stop_mapping.csv')
 GPS_DATA_PATH = os.getenv('GPS_DATA_PATH', 'data/amnex_direct_data.csv')
 CACHE_OUTPUT_PATH = os.getenv('CACHE_OUTPUT_PATH', f'travel_time_cache_{timestamp}.json')
@@ -178,9 +178,18 @@ def build_mappings():
         return None
 
     waybill_df['route_no'] = waybill_df['Schedule No'].apply(extract_route_no)
-    vehicle_to_route = dict(zip(waybill_df['Vehicle No'], waybill_df['route_no']))
+    waybill_df['Duty Date'] = pd.to_datetime(waybill_df['Duty Date'], format='%Y-%m-%d')
+    
+    vehicle_to_route = {}       # {(vehicle_num, duty_date): {(route_num, route_id), ...}, ...}
+    for _, row in waybill_df.iterrows():
+        key = (row['Vehicle No'], row['Duty Date'].date())
+        route_num = row['Bus Route - Route Number → Route Number']
+        route_id = row['Bus Route - Route Number → Route ID']
+        if key not in vehicle_to_route:
+            vehicle_to_route[key] = set()
+        vehicle_to_route[key].add((route_num, route_id))
 
-    # Route number to tummoc route ids
+    # Route number to tummoc route ids (Backup in case previous method fails for any reason)
     route_no_to_tummoc = {}
     for _, row in route_stop_df.iterrows():
         mtc_route = str(row['MTC ROUTE NO'])
