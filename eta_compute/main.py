@@ -6,8 +6,8 @@ from eta_compute.utils import get_routes, ist_date_from_timestamp, get_segments,
 def update_eta(fleet_id, gps_point, gps_timestamp):
     # Step 1: Add gps point to cache [key: <fleet_id>:gps] and get prev gps point
     update_gps_cache(fleet_id, gps_point, gps_timestamp)
-    prev_gps_point = get_prev_gps_point(fleet_id)
-    gps_trace = [gps_point] + prev_gps_point
+    gps_trace = get_prev_gps_point(fleet_id)
+    # gps_trace = [gps_point] + prev_gps_point  # This is redundant, the previous line already got the updated gps trace
 
     # Step 2: Get routes for the fleet (schedule + direction filter)
     date_ist = ist_date_from_timestamp(gps_timestamp)
@@ -49,8 +49,8 @@ def update_eta(fleet_id, gps_point, gps_timestamp):
 
 def main():
     # simulate gps tracking
-    fleet_id = ''
-    date_ist = '2025-05-20'
+    fleet_id = 'K0377' # Only for testing, device_id = 867032053786161
+    date_ist = '2025-05-02'
 
     gps_trace = get_gps_trace(fleet_id, date_ist)
     for gps in gps_trace:

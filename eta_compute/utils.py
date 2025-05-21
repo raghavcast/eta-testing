@@ -52,7 +52,7 @@ def get_routes(fleet_id, gps_trace, date_ist):
 
 def ist_date_from_timestamp(timestamp):
     # convert utc timestamp to ist date
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(timezone.utc).date()
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(timezone.ist).date()
 
 
 def update_eta(fleet_id, stop1, stop2, date_ist, start_time, end_time):
