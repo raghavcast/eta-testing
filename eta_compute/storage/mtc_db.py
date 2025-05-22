@@ -1,16 +1,23 @@
 from eta_compute.data import WAYBILL_PATH
 from eta_compute.cache import logger
+import eta_compute.storage.redis as redis
 
 import pandas as pd
 import os
 
 
 
-def get_routes(fleet_id, ist_dt):
+def get_waybill(fleet_id, ist_dt):
     # get routes for the fleet from waybill
     logger.info(f"Getting routes for fleet {fleet_id} on {ist_dt} in mtc_db")
 
-    buffer = pd.Timedelta(hours=float(os.getenv('WAYBILL_BUFFER')))
+    duty_date = ist_dt.strftime('%Y-%m-%d')
+    waybill = redis.get_waybill_from_cache(fleet_id, duty_date)       # Key: <fleet_id>:<duty_date>:waybill
+
+    if waybill:
+        logger.info(f"Routes found in cache for fleet {fleet_id} on {ist_dt}")
+        return waybill
+
 
     # All of this stuff will need to be replaced with the appropriate database calls
     # get waybill for the fleet
@@ -18,28 +25,24 @@ def get_routes(fleet_id, ist_dt):
     waybill_df = waybill_df.rename(columns={
         'Bus Schedule Trip Detail - Schedule Trip → End Time': 'End Time',
         'Bus Schedule Trip Detail - Schedule Trip → Start Time': 'Start Time',
-        'Bus Route - Route Number → Route ID': 'Route ID'
+        'Bus Route - Route Number → Route ID': 'Route ID',
+        'Bus Route - Route Number → Route Direction': 'Direction'
     })
 
-    logger.info(f"Waybill df types: {waybill_df['Duty Date'].iloc[0]}, {waybill_df['Start Time'].iloc[0]}")
-
-    waybill_df['Start Datetime'] = pd.to_datetime(waybill_df['Duty Date'] + ' ' + waybill_df['Start Time'], format='%Y-%m-%d %H:%M')
-    waybill_df['End Datetime'] = pd.to_datetime(waybill_df['Duty Date'] + ' ' + waybill_df['End Time'], format='%Y-%m-%d %H:%M')
-
-    logger.info(f"Waybill df start datetime: {waybill_df['Start Datetime'].iloc[0]}")
-    logger.info(f"Waybill df end datetime: {waybill_df['End Datetime'].iloc[0]}")
     waybill_df = waybill_df[
         (waybill_df['Vehicle No'] == fleet_id) &
-        (waybill_df['Duty Date'] == ist_dt.strftime('%Y-%m-%d')) &
-        (pd.to_datetime(waybill_df['Start Datetime']) - buffer <= ist_dt) &
-        (pd.to_datetime(waybill_df['End Datetime']) + buffer >= ist_dt)
+        (waybill_df['Duty Date'] == duty_date) 
     ]
 
-    logger.info(f"Waybill df after filtering: {waybill_df}")
+    filtered_waybill_df = pd.DataFrame(waybill_df[['Start Time', 'End Time', 'Route ID', 'Direction']])
+    
 
-    # get routes for the fleet
-    routes = waybill_df['Route ID'].unique()
+    filtered_waybill_df['Start Datetime'] = pd.to_datetime(duty_date + ' ' + filtered_waybill_df['Start Time'], format='%Y-%m-%d %H:%M')
+    filtered_waybill_df['End Datetime'] = pd.to_datetime(duty_date + ' ' + filtered_waybill_df['End Time'], format='%Y-%m-%d %H:%M')
+    filtered_waybill_df.sort_values(by='Start Datetime', inplace=True)
 
-    logger.info(f"Routes mtc_db: {routes}")
+    waybill = filtered_waybill_df[['Start Time', 'End Time', 'Route ID', 'Direction']].to_dict(orient='records')
+    redis.update_waybill_cache(fleet_id, duty_date, waybill)
 
-    return routes
+    # logger.info(f"waybill found: {pd.DataFrame(waybill)}")
+    return waybill

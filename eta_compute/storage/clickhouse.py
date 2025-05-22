@@ -1,6 +1,7 @@
-from eta_compute.data import AMNEX_DATA_PATH, FLEET_DEVICE_PATH, DATETIME_FORMAT
+from eta_compute.data import AMNEX_DATA_PATH, FLEET_DEVICE_PATH
 from eta_compute.cache import logger
 import pandas as pd
+import os
 
 def get_gps_trace(fleet_id, date_ist):
     # Importing data from csv files. Will be replaced with database connections in future
@@ -39,7 +40,7 @@ def get_gps_trace(fleet_id, date_ist):
         (gps_df['DataState'].str.contains('L') )
     ].sort_values(by='Timestamp')
     logger.info(f"Filtered GPS data for device {device_id} on {date_ist} with {len(filtered_gps_df)} points.")
-    filtered_gps_df['timestamp'] = filtered_gps_df['Timestamp'].dt.strftime(DATETIME_FORMAT)
+    filtered_gps_df['timestamp'] = filtered_gps_df['Timestamp'].dt.strftime(os.getenv('DATETIME_FORMAT'))
     filtered_gps_df = filtered_gps_df.rename(columns={
         'Lat': 'lat',
         'Long': 'lon'
@@ -48,12 +49,12 @@ def get_gps_trace(fleet_id, date_ist):
     return filtered_gps_df[['lat', 'lon', 'timestamp']].to_dict(orient='records')
 
 
-def push_segment_duration(fleet_id, stop1, stop2, date_ist, start_time, end_time, duration):
+def push_segment_duration(fleet_id, stop1, stop2, ist_dt, start_time, end_time, duration):
     # update eta between stop1 and stop2
     # push the eta to clickhouse [stop1, stop2, fleet_id, date_ist, start_time, end_time, duration]
     return
 
 
-def get_historic_durations(fleet_id, stop1, stop2):
+def get_historic_durations(stop1, stop2):
     # get historic eta between stop1 and stop2
-    return []
+    return None

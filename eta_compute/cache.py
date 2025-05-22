@@ -33,6 +33,7 @@ class TravelTimeCache:
     def set(self, key: str, driver_id: str, exit_timestamp: int, travel_time: float):
         if key not in self._cache:
             self._cache[key] = {}
+        logger.info(f"Setting cache for {key}, fleet_id: {driver_id}, exit at: {exit_timestamp}, travel time: {travel_time} seconds")
         self._cache[key][(driver_id, exit_timestamp)] = travel_time
 
     def dump(self) -> None:
@@ -70,7 +71,9 @@ class SimpleCache:
         self.cache[key] = [value] + self.cache.setdefault(key, [])
 
     def rpush(self, key, value):
-        self.cache[key] = self.cache.setdefault(key, []).append(value)
+        if key not in self.cache:
+            self.cache[key] = []
+        self.cache[key].append(value)
 
 travel_time_cache = TravelTimeCache()
 simple_cache = SimpleCache()
