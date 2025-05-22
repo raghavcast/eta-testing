@@ -1,6 +1,10 @@
-streaming_tracker/output/*.csv
-./*.csv
 route_visualizations/
 data/
 *.html
 *.pyc
+*.log
+*.json
+*.env
+*.png
+*.html
+*.csv

@@ -1,15 +1,10 @@
-from eta_compute.cache import travel_time_cache, simple_cache
+from eta_compute.cache import travel_time_cache, simple_cache, logger
 
-def update_gps_cache(fleet_id, gps_point, gps_timestamp):
+def update_gps_cache(fleet_id, gps_point):
     # add gps point to cache
     key = f'{fleet_id}:gps'
-    prev_points = simple_cache.get(key) or []
-    new_point = {
-        'lat': gps_point['lat'],
-        'lon': gps_point['lon'],
-        'timestamp': gps_timestamp
-    }
-    simple_cache.set(key, [new_point] + prev_points)
+    
+    simple_cache.rpush(key, gps_point)
 
 def get_prev_gps_point(fleet_id):
     # get prev gps point from cache

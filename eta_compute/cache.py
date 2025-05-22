@@ -66,5 +66,11 @@ class SimpleCache:
     def set(self, key, value):
         self.cache[key] = value
 
+    def lpush(self, key, value):
+        self.cache[key] = [value] + self.cache.setdefault(key, [])
+
+    def rpush(self, key, value):
+        self.cache[key] = self.cache.setdefault(key, []).append(value)
+
 travel_time_cache = TravelTimeCache()
 simple_cache = SimpleCache()

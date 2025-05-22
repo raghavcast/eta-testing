@@ -1,5 +1,6 @@
-from datetime import datetime
-from pytz import timezone
+from datetime import datetime, timedelta
+from pytz import UTC, timezone
+import pandas as pd
 
 import eta_compute.storage.mtc_db as mtc_db
 import eta_compute.storage.clickhouse as clickhouse
@@ -40,19 +41,19 @@ def compute_eta(stop1, stop2, start_time, end_time):
 # ------------------------------------------------------------
 
 
-def get_routes(fleet_id, gps_trace, date_ist):
+def get_routes(fleet_id, gps_trace, ist_dt):
     # get routes for the fleet (schedule + direction filter)
-    routes = mtc_db.get_routes(fleet_id, date_ist)
+    routes = mtc_db.get_routes(fleet_id, ist_dt)
 
     # filter routes by schedule and direction
-    routes = filter_routes(routes, gps_trace, date_ist)
+    routes = filter_routes(routes, gps_trace, ist_dt)
 
     return routes
 
 
-def ist_date_from_timestamp(timestamp):
-    # convert utc timestamp to ist date
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(timezone.ist).date()
+def ist_from_timestamp(timestamp):
+    # convert utc timestamp string to ist timestamp object
+    return pd.Timestamp(timestamp,) + timedelta(hours=5, minutes=30)
 
 
 def update_eta(fleet_id, stop1, stop2, date_ist, start_time, end_time):
