@@ -69,8 +69,8 @@ if __name__ == "__main__":
     logger.info(f"GPS trace start and stop: {gps_trace[0]} {gps_trace[-1]}")
     for gps in gps_trace:
         update_eta(fleet_id, gps_point=gps)
-        if pd.to_datetime(gps['timestamp']) > pd.to_datetime('2025-05-02 05:00:00'):
-            break
+        # if pd.to_datetime(gps['timestamp']) > pd.to_datetime('2025-05-02 05:00:00'):
+        #     break
 
     eta = get_eta(date_ist)
     logger.info(f"ETA computation completed. Results: {eta}")
