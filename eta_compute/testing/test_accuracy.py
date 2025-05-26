@@ -349,6 +349,17 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     # Remove outliers based on error_seconds only
     clean_df = remove_outliers(comparison_df, 'error_seconds')
     
+    # Remove first and last segments of each route for histogram
+    route_groups = clean_df.groupby('route_id')
+    histogram_df = pd.concat([
+        group.iloc[1:-1] if len(group) > 2 else group 
+        for _, group in route_groups
+    ])
+    
+    test_logger.info(f"\nHistogram Statistics:")
+    test_logger.info(f"Total segments after outlier removal: {len(clean_df)}")
+    test_logger.info(f"Segments used in histogram (excluding first/last): {len(histogram_df)}")
+    
     # Log outlier removal statistics
     removed = len(comparison_df) - len(clean_df)
     test_logger.info(f"\nOutlier Removal Statistics:")
@@ -369,7 +380,7 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     
     # Calculate appropriate bin edges
     # For seconds: use 5-second bins up to 5 minutes, then 25s bins
-    max_seconds = clean_df['error_seconds'].max()
+    max_seconds = histogram_df['error_seconds'].max()
     if max_seconds <= 300:  # 5 minutes
         bin_size_seconds = 5
         bin_edges_seconds = np.arange(0, max_seconds + bin_size_seconds, bin_size_seconds)
@@ -379,18 +390,18 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     
     # For percentage: use 2.5% bins
     bin_size_percent = 2.5
-    max_percent = clean_df['error_percent'].max()
+    max_percent = histogram_df['error_percent'].max()
     bin_edges_percent = np.arange(0, max_percent + bin_size_percent, bin_size_percent)
     
-    # Plot error in seconds (without outliers)
-    sns.histplot(data=clean_df, x='error_seconds', bins=bin_edges_seconds, ax=ax1)
+    # Plot error in seconds (without outliers and first/last segments)
+    sns.histplot(data=histogram_df, x='error_seconds', bins=bin_edges_seconds, ax=ax1)
     ax1.set_title(f'Distribution of Prediction Error (Seconds) - Outliers Removed\nBin Size: {bin_size_seconds} seconds')
     ax1.set_xlabel('Error (seconds)')
     ax1.set_ylabel('Count')
     
     # Add mean and median lines
-    mean_error = clean_df['error_seconds'].mean()
-    median_error = clean_df['error_seconds'].median()
+    mean_error = histogram_df['error_seconds'].mean()
+    median_error = histogram_df['error_seconds'].median()
     ax1.axvline(mean_error, color='red', linestyle='--', label=f'Mean: {mean_error:.1f}s')
     ax1.axvline(median_error, color='green', linestyle='--', label=f'Median: {median_error:.1f}s')
     ax1.legend()
@@ -400,15 +411,15 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
              transform=ax1.transAxes, ha='right', va='top',
              bbox=dict(facecolor='white', alpha=0.8))
     
-    # Plot error percentage (without outliers)
-    sns.histplot(data=clean_df, x='error_percent', bins=bin_edges_percent, ax=ax2)
+    # Plot error percentage (without outliers and first/last segments)
+    sns.histplot(data=histogram_df, x='error_percent', bins=bin_edges_percent, ax=ax2)
     ax2.set_title(f'Distribution of Prediction Error (Percentage) - Outliers Removed\nBin Size: {bin_size_percent}%')
     ax2.set_xlabel('Error (%)')
     ax2.set_ylabel('Count')
     
     # Add mean and median lines
-    mean_percent = clean_df['error_percent'].mean()
-    median_percent = clean_df['error_percent'].median()
+    mean_percent = histogram_df['error_percent'].mean()
+    median_percent = histogram_df['error_percent'].median()
     ax2.axvline(mean_percent, color='red', linestyle='--', label=f'Mean: {mean_percent:.1f}%')
     ax2.axvline(median_percent, color='green', linestyle='--', label=f'Median: {median_percent:.1f}%')
     ax2.legend()
@@ -433,15 +444,15 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     test_logger.info(f"Seconds histogram: {len(bin_edges_seconds)-1} bins of {bin_size_seconds} seconds each")
     test_logger.info(f"Percentage histogram: {len(bin_edges_percent)-1} bins of {bin_size_percent}% each")
     
-    # Print summary statistics (without outliers)
-    test_logger.info("\nError Distribution Statistics (Outliers Removed):")
+    # Print summary statistics (without outliers and first/last segments)
+    test_logger.info("\nError Distribution Statistics (Outliers Removed, First/Last Segments Excluded):")
     test_logger.info(f"Seconds - Mean: {mean_error:.1f}, Median: {median_error:.1f}")
     test_logger.info(f"Percent - Mean: {mean_percent:.1f}, Median: {median_percent:.1f}")
     
-    # Calculate percentiles (without outliers)
+    # Calculate percentiles (without outliers and first/last segments)
     percentiles = [50, 75, 90, 95, 99]
     for p in percentiles:
-        error_p = clean_df['error_seconds'].quantile(p/100)
+        error_p = histogram_df['error_seconds'].quantile(p/100)
         test_logger.info(f"{p}th percentile error: {error_p:.1f} seconds")
     
     # Save cleaned data
