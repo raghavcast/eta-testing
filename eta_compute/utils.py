@@ -43,7 +43,6 @@ def get_routes(fleet_id, gps_trace, ist_dt):
 
     return routes
 
-
 def get_segments(routes, gps_trace):
     # get route segment (stopM:stopN) from curr gps + prev gps [key: <fleet_id>:gps]
     stop_dist = {}
@@ -52,29 +51,94 @@ def get_segments(routes, gps_trace):
         stop_dist[route_id] = []
         for stop in stops:
             distance = calculate_distance(gps_trace[-1]['lat'], gps_trace[-1]['lon'], stop['lat'], stop['lon'])
-            stop_dist[route_id].append((stop, distance))
-        stop_dist[route_id].sort(key=lambda x: x[1])
-        if abs(stop_dist[route_id][0][0]['sequence'] - stop_dist[route_id][1][0]['sequence']) > 1:
-            logger.warning(f"Skipping route {route_id} because the stops are not consecutive")
+            stop_dist[route_id].append({'stop':stop,'distance': distance, 'seq': stop['sequence']})
+        stop_dist[route_id].sort(key=lambda x: x['distance'])
+        
+        # Get the closest stop
+        closest_stop = stop_dist[route_id][0]
+        
+        # Find previous and next stops in sequence
+        prev_stop = None
+        next_stop = None
+        for stop in stop_dist[route_id]:
+            if stop['seq'] == closest_stop['seq'] - 1:
+                prev_stop = stop
+            elif stop['seq'] == closest_stop['seq'] + 1:
+                next_stop = stop
+        
+        # Handle cases where we're at the start or end of the route
+        if prev_stop is None and next_stop is None:
+            logger.warning(f"Skipping route {route_id} - No adjacent stops found for stop {closest_stop['stop']['stop_id']} (seq: {closest_stop['seq']})")
             continue
-        point_distance = point_to_line_distance(gps_trace[-1]['lat'], gps_trace[-1]['lon'], 
-                                  stop_dist[route_id][0][0]['lat'], stop_dist[route_id][0][0]['lon'], 
-                                  stop_dist[route_id][1][0]['lat'], stop_dist[route_id][1][0]['lon'])
-        # logger.info(f"Point distance: {point_distance}")
-        if point_distance < float(os.getenv('POINT_TO_LINE_DISTANCE_THRESHOLD')):
-            calc = {'stop1': stop_dist[route_id][0][0]['stop_id'], 'stop2': stop_dist[route_id][1][0]['stop_id']}
-            if segment is None:
-                segment = calc
+        elif prev_stop is None:
+            # We're at the first stop, use the next stop
+            stop1 = closest_stop
+            stop2 = next_stop
+            logger.info(f"Route {route_id} - Using first stop segment: Stop {stop1['stop']['stop_id']} to Stop {stop2['stop']['stop_id']}")
+        elif next_stop is None:
+            # We're at the last stop, use the previous stop
+            stop1 = prev_stop
+            stop2 = closest_stop
+            logger.info(f"Route {route_id} - Using last stop segment: Stop {stop1['stop']['stop_id']} to Stop {stop2['stop']['stop_id']}")
+        else:
+            # We have both adjacent stops, calculate angles to determine which segment to use
+            angle_to_prev = calculate_angle(
+                closest_stop['stop']['lat'], closest_stop['stop']['lon'],
+                prev_stop['stop']['lat'], prev_stop['stop']['lon'],
+                gps_trace[-1]['lat'], gps_trace[-1]['lon']
+            )
+            
+            angle_to_next = calculate_angle(
+                closest_stop['stop']['lat'], closest_stop['stop']['lon'],
+                next_stop['stop']['lat'], next_stop['stop']['lon'],
+                gps_trace[-1]['lat'], gps_trace[-1]['lon']
+            )
+            
+            # Determine which segment to use based on smaller angle
+            if angle_to_prev < angle_to_next:
+                stop1 = prev_stop
+                stop2 = closest_stop
+                logger.info(f"Route {route_id} - Using previous stop segment based on angle: Stop {stop1['stop']['stop_id']} to Stop {stop2['stop']['stop_id']}")
             else:
-                if segment != calc:
-                    segment = None
-                    logger.warning(f"Skipping route {route_id} because matching to multiple segments")
-                    break
+                stop1 = closest_stop
+                stop2 = next_stop
+                logger.info(f"Route {route_id} - Using next stop segment based on angle: Stop {stop1['stop']['stop_id']} to Stop {stop2['stop']['stop_id']}")
+        
+        # Calculate point to line distance for the selected segment
+        point_distance = point_to_line_distance(
+            gps_trace[-1]['lat'], gps_trace[-1]['lon'],
+            stop1['stop']['lat'], stop1['stop']['lon'],
+            stop2['stop']['lat'], stop2['stop']['lon']
+        )
+        
+        logger.info(f"Route {route_id} point distance: {point_distance} m")
+        if point_distance >= float(os.getenv('POINT_TO_LINE_DISTANCE_THRESHOLD')):
+            logger.warning(f"Skipping route {route_id} - point is too far from line segment:"
+                           f"Distance {point_distance:.2f}m exceeds threshold {float(os.getenv('POINT_TO_LINE_DISTANCE_THRESHOLD'))}m")
+            continue
+        
+        calc = {'stop1': stop1['stop']['stop_id'], 'stop2': stop2['stop']['stop_id']}
+        if segment is None:
+            segment = calc
+            logger.info(f"Found initial segment for route {route_id}: "
+                        f"Stop {stop1['stop']['stop_id']} (seq: {stop1['seq']}) to "
+                        f"Stop {stop2['stop']['stop_id']} (seq: {stop2['seq']})")
+        else:
+            if segment != calc:
+                logger.warning(
+                    f"Skipping route {route_id} - Multiple segment match: "
+                    f"Found segment Stop {calc['stop1']} (seq: {stop1['seq']}) to Stop {calc['stop2']} (seq: {stop2['seq']}), "
+                    f"but already have segment Stop {segment['stop1']} to Stop {segment['stop2']}"
+                )
+                segment = None
+                break
     
-    logger.info(f"Segments: {segment}")
+    if segment is None:
+        logger.warning("No valid segment found after processing all routes")
+    else:
+        logger.info(f"Final selected segment: Stop {segment['stop1']} to Stop {segment['stop2']}")
 
     return segment
-
 
 def compute_eta(stop1, stop2, duration):
     # compute eta between stop1 and stop2 using historic durations
@@ -95,10 +159,7 @@ def compute_eta(stop1, stop2, duration):
 # Calling functions
 # ------------------------------------------------------------
 
-def point_to_line_distance(point_lat, point_lon, line_start_lat, line_start_lon, line_end_lat, line_end_lon):
-    # Convert GPS coordinates to meters using a local tangent plane
-    # Using the start point as the origin of our local coordinate system
-    def gps_to_meters(lat, lon, ref_lat, ref_lon):
+def gps_to_meters(lat, lon, ref_lat, ref_lon):
         # Earth's radius in meters
         R = 6371000
         
@@ -113,6 +174,19 @@ def point_to_line_distance(point_lat, point_lon, line_start_lat, line_start_lon,
         y = R * (lat_rad - ref_lat_rad)
         
         return x, y
+
+def calculate_angle(center_lat, center_lon, point1_lat, point1_lon, point2_lat, point2_lon):
+    stop_x, stop_y = gps_to_meters(point1_lat, point1_lon, center_lat, center_lon)
+    point_x, point_y = gps_to_meters(point2_lat, point2_lon, center_lat, center_lon)
+
+    # calculate angle between stop1 - stop2 and stop2 - point
+    angle = math.atan2(point_y, point_x) - math.atan2(stop_y, stop_x)
+    
+    return math.degrees(angle)
+
+def point_to_line_distance(point_lat, point_lon, line_start_lat, line_start_lon, line_end_lat, line_end_lon):
+    # Convert GPS coordinates to meters using a local tangent plane
+    # Using the start point as the origin of our local coordinate system
     
     # Convert all points to local coordinates in meters
     point_x, point_y = gps_to_meters(point_lat, point_lon, line_start_lat, line_start_lon)
@@ -224,7 +298,7 @@ def filter_route_by_schedule(waybill, ist_dt):
     return routes
 
 def filter_route_by_direction(route_stops, gps_trace):
-    point_vector_bearing = calculate_bearing(gps_trace[-3], gps_trace[-1])
+    point_vector_bearing = calculate_bearing(gps_trace[-3], gps_trace[-1]) # Last point and third last point are used to find current direction
 
     filtered_routes = {}
     for route_id, stops in route_stops.items():

@@ -15,7 +15,7 @@ WAYBILL_PATH = DATA_PATH / 'waybill_metabase_joined_may_2.csv'
 AMNEX_DATA_PATH = DATA_PATH / 'amnex_direct_data_may_1-3.csv'
 FLEET_DEVICE_PATH = DATA_PATH / 'fleet_device_mapping.csv'
 POLYLINE_PATH = DATA_PATH / 'pgrider_route.csv'
-ROUTE_STOPS_PATH = DATA_PATH / 'route_stop_mapping.csv'
+ROUTE_STOPS_PATH = DATA_PATH / 'route_stop_mapping_19_05_2025.csv'
 TEST_SCHEDULE_PATH = DATA_PATH / 'test_schedule_{fleet_id}_{date}.csv'
 
 # Convert Path objects to strings for compatibility
