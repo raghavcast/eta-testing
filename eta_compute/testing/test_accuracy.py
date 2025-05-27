@@ -242,7 +242,7 @@ class RouteTimeAnalyzer:
                     pred_time = closest_prediction
                     
                         
-                    error = abs(pred_time - actual_time)
+                    error = pred_time - actual_time
                     if actual_time > 0:
                         error_percent = (error / actual_time) * 100
                     else:
@@ -301,18 +301,18 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     # Log high percentage errors (>100%)
     high_percent_errors = comparison_df[comparison_df['error_percent'] > 100]
     if len(high_percent_errors) > 0:
-        test_logger.info("\nHigh Percentage Errors (>100%):")
+        test_logger.info("High Percentage Errors (>100%):")
         test_logger.info(f"Found {len(high_percent_errors)} segments with >100% error")
         for _, row in high_percent_errors.iterrows():
             test_logger.info(
-                f"Route: {row['route_id']}, "
-                f"From Stop: {row['from_stop']} (ID: {row['from_stop_id']}, Seq: {row['from_sequence']}), "
-                f"To Stop: {row['to_stop']} (ID: {row['to_stop_id']}, Seq: {row['to_sequence']}), "
-                f"Exit Time: {row['exit_time']}, "
-                f"Actual Time: {row['actual_time']:.1f}s, "
-                f"Predicted Time: {row['predicted_time']:.1f}s, "
-                f"Error: {row['error_seconds']:.1f}s, "
-                f"Error %: {row['error_percent']:.1f}%"
+                f" Route: {row['route_id']}, "
+                f" From Stop: {row['from_stop']} (ID: {row['from_stop_id']}, Seq: {row['from_sequence']}), "
+                f" To Stop: {row['to_stop']} (ID: {row['to_stop_id']}, Seq: {row['to_sequence']}), "
+                f" Exit Time: {row['exit_time']}, "
+                f" Actual Time: {row['actual_time']:.1f}s, "
+                f" Predicted Time: {row['predicted_time']:.1f}s, "
+                f" Error: {row['error_seconds']:.1f}s, "
+                f" Error %: {row['error_percent']:.1f}%"
             )
     
     # Remove outliers using IQR method
@@ -327,15 +327,15 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
         outliers = df[(df[column] < lower_bound) | (df[column] > upper_bound)]
         
         # Log detailed information about outliers
-        test_logger.info(f"\nDetailed Outlier Information for {column}:")
-        test_logger.info(f"Outlier bounds: [{lower_bound:.1f}, {upper_bound:.1f}]")
-        test_logger.info(f"Number of outliers: {len(outliers)}")
+        test_logger.info(f"Detailed Outlier Information for {column}:")
+        test_logger.info(f" Outlier bounds: [{lower_bound:.1f}, {upper_bound:.1f}]")
+        test_logger.info(f" Number of outliers: {len(outliers)}")
         
         if len(outliers) > 0:
-            test_logger.info("\nOutlier Details:")
+            test_logger.info("Outlier Details:")
             for _, row in outliers.iterrows():
                 test_logger.info(
-                    f"Route: {row['route_id']}, "
+                    f" Route: {row['route_id']}, "
                     f"From Stop: {row['from_stop']} (ID: {row['from_stop_id']}, Seq: {row['from_sequence']}), "
                     f"To Stop: {row['to_stop']} (ID: {row['to_stop_id']}, Seq: {row['to_sequence']}), "
                     f"Exit Time: {row['exit_time']}, "
@@ -356,14 +356,14 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
         for _, group in route_groups
     ])
     
-    test_logger.info(f"\nHistogram Statistics:")
-    test_logger.info(f"Total segments after outlier removal: {len(clean_df)}")
-    test_logger.info(f"Segments used in histogram (excluding first/last): {len(histogram_df)}")
+    test_logger.info(f"Histogram Statistics:")
+    test_logger.info(f" Total segments after outlier removal: {len(clean_df)}")
+    test_logger.info(f" Segments used in histogram (excluding first/last): {len(histogram_df)}")
     
     # Log outlier removal statistics
     removed = len(comparison_df) - len(clean_df)
-    test_logger.info(f"\nOutlier Removal Statistics:")
-    test_logger.info(f"Removed {removed} outliers ({removed/len(comparison_df)*100:.1f}% of total)")
+    test_logger.info(f"Outlier Removal Statistics:")
+    test_logger.info(f" Removed {removed} outliers ({removed/len(comparison_df)*100:.1f}% of total)")
     
     # Save outliers to CSV file
     outliers = comparison_df[~comparison_df.index.isin(clean_df.index)]
@@ -379,14 +379,14 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
     
     # Calculate appropriate bin edges
-    # For seconds: use 5-second bins up to 5 minutes, then 25s bins
-    max_seconds = histogram_df['error_seconds'].max()
-    if max_seconds <= 300:  # 5 minutes
+    # For seconds: use bins that go from negative to positive
+    max_abs_error = max(abs(histogram_df['error_seconds'].min()), abs(histogram_df['error_seconds'].max()))
+    if max_abs_error <= 300:  # 5 minutes
         bin_size_seconds = 5
-        bin_edges_seconds = np.arange(0, max_seconds + bin_size_seconds, bin_size_seconds)
+        bin_edges_seconds = np.arange(-max_abs_error, max_abs_error + bin_size_seconds, bin_size_seconds)
     else:
         bin_size_seconds = 25
-        bin_edges_seconds = np.arange(0, max_seconds + bin_size_seconds, bin_size_seconds)
+        bin_edges_seconds = np.arange(-max_abs_error, max_abs_error + bin_size_seconds, bin_size_seconds)
     
     # For percentage: use 2.5% bins
     bin_size_percent = 2.5
@@ -440,14 +440,14 @@ def plot_error_histograms(comparison_df: pd.DataFrame, output_dir: str = 'output
     test_logger.info(f"Saved error histograms to {plot_path}")
     
     # Log bin information
-    test_logger.info("\nHistogram Bin Information:")
-    test_logger.info(f"Seconds histogram: {len(bin_edges_seconds)-1} bins of {bin_size_seconds} seconds each")
-    test_logger.info(f"Percentage histogram: {len(bin_edges_percent)-1} bins of {bin_size_percent}% each")
+    test_logger.info("Histogram Bin Information:")
+    test_logger.info(f" Seconds histogram: {len(bin_edges_seconds)-1} bins of {bin_size_seconds} seconds each")
+    test_logger.info(f" Percentage histogram: {len(bin_edges_percent)-1} bins of {bin_size_percent}% each")
     
     # Print summary statistics (without outliers and first/last segments)
-    test_logger.info("\nError Distribution Statistics (Outliers Removed, First/Last Segments Excluded):")
-    test_logger.info(f"Seconds - Mean: {mean_error:.1f}, Median: {median_error:.1f}")
-    test_logger.info(f"Percent - Mean: {mean_percent:.1f}, Median: {median_percent:.1f}")
+    test_logger.info("Error Distribution Statistics (Outliers Removed, First/Last Segments Excluded):")
+    test_logger.info(f" Seconds - Mean: {mean_error:.1f}, Median: {median_error:.1f}")
+    test_logger.info(f" Percent - Mean: {mean_percent:.1f}, Median: {median_percent:.1f}")
     
     # Calculate percentiles (without outliers and first/last segments)
     percentiles = [50, 75, 90, 95, 99]
@@ -521,22 +521,64 @@ if __name__ == "__main__":
     cleaned_comparison = plot_error_histograms(comparison)
     
     # Print final summary statistics using cleaned data
-    test_logger.info("\nFinal Accuracy Statistics (Outliers Removed):")
+    test_logger.info("Final Accuracy Statistics (Outliers Removed):")
     test_logger.info(f"Total segments analyzed: {len(comparison)}")
     test_logger.info(f"Segments after outlier removal: {len(cleaned_comparison)}")
-    test_logger.info(f"Mean error: {cleaned_comparison['error_seconds'].mean():.1f} seconds")
-    test_logger.info(f"Median error: {cleaned_comparison['error_seconds'].median():.1f} seconds")
-    test_logger.info(f"Mean error percentage: {cleaned_comparison['error_percent'].mean():.1f}%")
+    
+    # Time range statistics
+    test_logger.info("Time Range Statistics:")
+    test_logger.info("Actual Times:")
+    test_logger.info(f"  Mean: {cleaned_comparison['actual_time'].mean():.1f} seconds")
+    test_logger.info(f"  Median: {cleaned_comparison['actual_time'].median():.1f} seconds")
+    test_logger.info(f"  Min: {cleaned_comparison['actual_time'].min():.1f} seconds")
+    test_logger.info(f"  Max: {cleaned_comparison['actual_time'].max():.1f} seconds")
+    test_logger.info(f"  Standard deviation: {cleaned_comparison['actual_time'].std():.1f} seconds")
+    
+    test_logger.info("Predicted Times:")
+    test_logger.info(f"  Mean: {cleaned_comparison['predicted_time'].mean():.1f} seconds")
+    test_logger.info(f"  Median: {cleaned_comparison['predicted_time'].median():.1f} seconds")
+    test_logger.info(f"  Min: {cleaned_comparison['predicted_time'].min():.1f} seconds")
+    test_logger.info(f"  Max: {cleaned_comparison['predicted_time'].max():.1f} seconds")
+    test_logger.info(f"  Standard deviation: {cleaned_comparison['predicted_time'].std():.1f} seconds")
+    
+    # Signed error statistics (shows bias)
+    test_logger.info("Signed Error Statistics (shows prediction bias):")
+    test_logger.info(f" Mean signed error: {cleaned_comparison['error_seconds'].mean():.1f} seconds")
+    test_logger.info(f" Median signed error: {cleaned_comparison['error_seconds'].median():.1f} seconds")
+    test_logger.info(f" Mean signed error percentage: {cleaned_comparison['error_percent'].mean():.1f}%")
+    
+    # Absolute error statistics (shows magnitude of error)
+    test_logger.info("Absolute Error Statistics (shows error magnitude):")
+    test_logger.info(f" Mean absolute error: {cleaned_comparison['error_seconds'].abs().mean():.1f} seconds")
+    test_logger.info(f" Median absolute error: {cleaned_comparison['error_seconds'].abs().median():.1f} seconds")
+    test_logger.info(f" Mean absolute error percentage: {cleaned_comparison['error_percent'].abs().mean():.1f}%")
     
     # Additional statistics
-    test_logger.info("\nError Distribution (Outliers Removed):")
-    test_logger.info(f"Standard deviation: {cleaned_comparison['error_seconds'].std():.1f} seconds")
-    test_logger.info(f"Min error: {cleaned_comparison['error_seconds'].min():.1f} seconds")
-    test_logger.info(f"Max error: {cleaned_comparison['error_seconds'].max():.1f} seconds")
+    test_logger.info("Error Distribution (Outliers Removed):")
+    test_logger.info(f" Standard deviation: {cleaned_comparison['error_seconds'].std():.1f} seconds")
+    test_logger.info(f" Min error: {cleaned_comparison['error_seconds'].min():.1f} seconds")
+    test_logger.info(f" Max error: {cleaned_comparison['error_seconds'].max():.1f} seconds")
     
-    # Percentile statistics
+    # Split statistics for over/under/perfect predictions
+    over_predictions = cleaned_comparison[cleaned_comparison['error_seconds'] > 0]
+    under_predictions = cleaned_comparison[cleaned_comparison['error_seconds'] < 0]
+    perfect_predictions = cleaned_comparison[cleaned_comparison['error_seconds'] == 0]
+    
+    test_logger.info("Prediction Bias Analysis:")
+    test_logger.info(f" Total segments: {len(cleaned_comparison)}")
+    test_logger.info(f" Over-predictions (too slow): {len(over_predictions)} segments ({len(over_predictions)/len(cleaned_comparison)*100:.1f}%)")
+    test_logger.info(f"   Mean over-prediction: {over_predictions['error_seconds'].mean():.1f} seconds")
+    test_logger.info(f"   Mean over-prediction percentage: {over_predictions['error_percent'].mean():.1f}%")
+    
+    test_logger.info(f" Under-predictions (too fast): {len(under_predictions)} segments ({len(under_predictions)/len(cleaned_comparison)*100:.1f}%)")
+    test_logger.info(f"   Mean under-prediction: {under_predictions['error_seconds'].mean():.1f} seconds")
+    test_logger.info(f"   Mean under-prediction percentage: {under_predictions['error_percent'].mean():.1f}%")
+    
+    test_logger.info(f" Perfect predictions (error = 0): {len(perfect_predictions)} segments ({len(perfect_predictions)/len(cleaned_comparison)*100:.1f}%)")
+    
+    # Percentile statistics for absolute errors
     percentiles = [50, 75, 90, 95, 99]
-    test_logger.info("\nPercentile Statistics (Outliers Removed):")
+    test_logger.info("Percentile Statistics (Absolute Errors):")
     for p in percentiles:
-        error_p = cleaned_comparison['error_seconds'].quantile(p/100)
-        test_logger.info(f"{p}th percentile error: {error_p:.1f} seconds")
+        error_p = cleaned_comparison['error_seconds'].abs().quantile(p/100)
+        test_logger.info(f" {p}th percentile absolute error: {error_p:.1f} seconds")
