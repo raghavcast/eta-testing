@@ -25,7 +25,6 @@ def filter_routes(waybill, gps_trace, ist_dt):
 
     # Filter by direction
     filtered_routes = filter_route_by_direction(route_stops, gps_trace)
-    # logger.info(f"Filtered routes: {filtered_routes}")
 
     return filtered_routes
 
@@ -298,7 +297,25 @@ def filter_route_by_schedule(waybill, ist_dt):
     return routes
 
 def filter_route_by_direction(route_stops, gps_trace):
-    point_vector_bearing = calculate_bearing(gps_trace[-3], gps_trace[-1]) # Last point and third last point are used to find current direction
+    # Calculate the direction vector from the last two GPS points
+    point_vector_bearing = calculate_bearing(gps_trace[-3], gps_trace[-1])
+    
+    # Calculate the actual movement vector (in meters) to determine direction
+    point1_x, point1_y = gps_to_meters(gps_trace[-3]['lat'], gps_trace[-3]['lon'], 
+                                     gps_trace[-3]['lat'], gps_trace[-3]['lon'])
+    point2_x, point2_y = gps_to_meters(gps_trace[-1]['lat'], gps_trace[-1]['lon'], 
+                                     gps_trace[-3]['lat'], gps_trace[-3]['lon'])
+    movement_vector = (point2_x - point1_x, point2_y - point1_y)
+    
+    # Normalize the movement vector
+    movement_magnitude = math.sqrt(movement_vector[0]**2 + movement_vector[1]**2)
+    if movement_magnitude > 0:
+        movement_vector = (movement_vector[0]/movement_magnitude, 
+                         movement_vector[1]/movement_magnitude)
+    
+    logger.info(f"Point vector bearing: {point_vector_bearing}")
+    logger.info(f"Movement vector (normalized): ({movement_vector[0]:.2f}, {movement_vector[1]:.2f})")
+    logger.info(f"Movement magnitude: {movement_magnitude:.2f} meters")
 
     filtered_routes = {}
     for route_id, stops in route_stops.items():
@@ -309,12 +326,53 @@ def filter_route_by_direction(route_stops, gps_trace):
             if distance < min_distance:
                 min_distance = distance
                 min_id = idx
+        
+        # Calculate the route segment vector
         if min_id == 0:
-            stop_bearing = calculate_bearing(stops[0], stops[1])
+            stop1 = stops[0]
+            stop2 = stops[1]
         else:
-            stop_bearing = calculate_bearing(stops[min_id - 1], stops[min_id])
-        if (angle_diff(point_vector_bearing, stop_bearing) < float(os.getenv('DIRECTION_MATCH_ANGLE'))):
+            stop1 = stops[min_id - 1]
+            stop2 = stops[min_id]
+        
+        # Convert stop coordinates to meters relative to first stop
+        stop1_x, stop1_y = gps_to_meters(stop1['lat'], stop1['lon'], stop1['lat'], stop1['lon'])
+        stop2_x, stop2_y = gps_to_meters(stop2['lat'], stop2['lon'], stop1['lat'], stop1['lon'])
+        route_vector = (stop2_x - stop1_x, stop2_y - stop1_y)
+        
+        # Normalize the route vector
+        route_magnitude = math.sqrt(route_vector[0]**2 + route_vector[1]**2)
+        if route_magnitude > 0:
+            route_vector = (route_vector[0]/route_magnitude, 
+                          route_vector[1]/route_magnitude)
+        
+        # Calculate the dot product of normalized vectors
+        dot_product = (movement_vector[0] * route_vector[0] + 
+                      movement_vector[1] * route_vector[1])
+        
+        # Calculate the angle between vectors
+        cos_angle = dot_product  # Since vectors are normalized, dot product equals cos(angle)
+        # Clamp cos_angle to [-1, 1] to handle floating point errors
+        cos_angle = max(-1.0, min(1.0, cos_angle))
+        angle = math.degrees(math.acos(cos_angle))
+        
+        logger.info(f"Route {route_id} analysis:")
+        logger.info(f"  Stop1: {stop1['stop_id']}, seq: {stop1['sequence']} ({stop1['lat']:.6f}, {stop1['lon']:.6f})")
+        logger.info(f"  Stop2: {stop2['stop_id']}, seq: {stop2['sequence']} ({stop2['lat']:.6f}, {stop2['lon']:.6f})")
+        logger.info(f"  Route vector (normalized): ({route_vector[0]:.2f}, {route_vector[1]:.2f})")
+        logger.info(f"  Route magnitude: {route_magnitude:.2f} meters")
+        logger.info(f"  Dot product: {dot_product:.2f}")
+        logger.info(f"  Angle between vectors: {angle:.2f} degrees")
+        
+        # Only consider routes where the angle is less than the threshold
+        # AND the dot product is positive (vectors pointing in same direction)
+        if angle < float(os.getenv('DIRECTION_MATCH_ANGLE')) and dot_product > 0:
             filtered_routes[route_id] = stops
+            logger.info(f"  Direction match found")
+        else:
+            logger.info(f"  Direction mismatch")
+    
+    logger.info(f"Routes filtered by direction: {filtered_routes.keys()}")
     return filtered_routes
 
 def ist_from_timestamp(timestamp):
